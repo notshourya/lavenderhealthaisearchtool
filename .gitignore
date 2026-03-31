@@ -1,0 +1,14 @@
+.worktrees/
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.playwright/
+node_modules/
+dashboard/dist/
+*.egg-info/
+dist/
+build/
+.DS_Store
+docs/.DS_Store
+docs/superpowers/.DS_Store
