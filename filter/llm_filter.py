@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 
-import anthropic
+import google.generativeai as genai
 
 import config
 
-anthropic_client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+genai.configure(api_key=config.GEMINI_API_KEY)
+_model = genai.GenerativeModel("gemini-2.0-flash")
 
 CLASSIFICATION_PROMPT = """You are reviewing Google reviews for a dental clinic.
 
@@ -23,17 +24,9 @@ class LLMVerdict:
 
 
 def classify_review(review_text: str) -> LLMVerdict:
-    response = anthropic_client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=100,
-        messages=[
-            {
-                "role": "user",
-                "content": CLASSIFICATION_PROMPT.format(review_text=review_text),
-            }
-        ],
-    )
-    raw = response.content[0].text.strip()
+    prompt = CLASSIFICATION_PROMPT.format(review_text=review_text)
+    response = _model.generate_content(prompt)
+    raw = response.text.strip()
     is_yes = raw.upper().startswith("YES")
     reasoning = raw.split(".", 1)[1].strip() if "." in raw else raw
     return LLMVerdict(is_insurance_complaint=is_yes, reasoning=reasoning)

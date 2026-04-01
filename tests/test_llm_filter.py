@@ -4,14 +4,12 @@ from filter.llm_filter import classify_reviews, LLMVerdict, CLASSIFICATION_PROMP
 
 
 def make_mock_response(text: str):
-    msg = MagicMock()
-    msg.content = [MagicMock(text=text)]
-    return msg
+    return MagicMock(text=text)
 
 
 def test_classify_yes_response():
-    with patch("filter.llm_filter.anthropic_client") as mock_client:
-        mock_client.messages.create.return_value = make_mock_response(
+    with patch("filter.llm_filter._model") as mock_model:
+        mock_model.generate_content.return_value = make_mock_response(
             "YES. The reviewer explicitly states their insurance claim was denied and they were charged out of pocket."
         )
         verdicts = classify_reviews(["They denied my insurance claim and I had to pay $500 out of pocket."])
@@ -22,8 +20,8 @@ def test_classify_yes_response():
 
 
 def test_classify_no_response():
-    with patch("filter.llm_filter.anthropic_client") as mock_client:
-        mock_client.messages.create.return_value = make_mock_response(
+    with patch("filter.llm_filter._model") as mock_model:
+        mock_model.generate_content.return_value = make_mock_response(
             "NO. The reviewer mentions waiting time and staff attitude but nothing about insurance claims."
         )
         verdicts = classify_reviews(["The wait was too long and the staff seemed rude."])
@@ -40,14 +38,14 @@ def test_classify_batch_of_reviews():
     ]
     call_count = 0
 
-    def side_effect(**kwargs):
+    def side_effect(prompt):
         nonlocal call_count
         resp = make_mock_response(responses[call_count])
         call_count += 1
         return resp
 
-    with patch("filter.llm_filter.anthropic_client") as mock_client:
-        mock_client.messages.create.side_effect = side_effect
+    with patch("filter.llm_filter._model") as mock_model:
+        mock_model.generate_content.side_effect = side_effect
         verdicts = classify_reviews([
             "They denied my insurance claim.",
             "The wait was terrible.",

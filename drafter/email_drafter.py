@@ -1,17 +1,21 @@
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-import anthropic
+import google.generativeai as genai
 
 import config
-
-anthropic_client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 SYSTEM_PROMPT = """You are a professional outreach writer for LavenderHealth, a company that helps dental practices resolve insurance billing issues and improve their revenue cycle management.
 
 Your tone is empathetic, professional, and non-accusatory. You acknowledge patient frustration without sensationalizing it. Your goal is to open a conversation, not make a hard sell.
 
 Write emails that feel personal and specific — reference the clinic by name, use the contact's first name, and briefly acknowledge the pattern you noticed. Keep it concise (under 150 words for the body)."""
+
+genai.configure(api_key=config.GEMINI_API_KEY)
+_model = genai.GenerativeModel(
+    model_name="gemini-2.5-pro",
+    system_instruction=SYSTEM_PROMPT,
+)
 
 EMAIL_PROMPT = """Write a cold outreach email to a dental clinic whose online reviews show a pattern of insurance claim complaints.
 
@@ -44,23 +48,13 @@ def draft_outreach_email(
     excerpts_text = "\n".join(f'- "{e}"' for e in flagged_review_excerpts[:3])
     first_name = contact_first_name or "there"
 
-    response = anthropic_client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=600,
-        system=SYSTEM_PROMPT,
-        messages=[
-            {
-                "role": "user",
-                "content": EMAIL_PROMPT.format(
-                    clinic_name=clinic_name,
-                    contact_first_name=first_name,
-                    review_excerpts=excerpts_text,
-                ),
-            }
-        ],
+    prompt = EMAIL_PROMPT.format(
+        clinic_name=clinic_name,
+        contact_first_name=first_name,
+        review_excerpts=excerpts_text,
     )
-
-    raw = response.content[0].text.strip()
+    response = _model.generate_content(prompt)
+    raw = response.text.strip()
     return _parse_email_response(raw)
 
 

@@ -18,7 +18,7 @@ def required_env_vars(monkeypatch):
         "DATABASE_URL", "postgresql://lavender:lavender@localhost:5432/lavenderhealth"
     ))
     monkeypatch.setenv("APOLLO_API_KEY", os.environ.get("APOLLO_API_KEY", "test"))
-    monkeypatch.setenv("ANTHROPIC_API_KEY", os.environ.get("ANTHROPIC_API_KEY", "test"))
+    monkeypatch.setenv("GEMINI_API_KEY", os.environ.get("GEMINI_API_KEY", "test"))
 
 
 @pytest.fixture(autouse=True)
