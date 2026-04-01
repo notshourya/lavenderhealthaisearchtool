@@ -156,16 +156,18 @@ def test_clinic_relationships(session):
 
 
 def test_get_session_yields_and_closes(monkeypatch):
-    import sys
-    monkeypatch.setenv("DATABASE_URL", "postgresql://lavender:lavender@localhost:5432/lavenderhealth")
-    monkeypatch.setenv("APOLLO_API_KEY", "test")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
-    from db.session import get_session
-    gen = get_session()
-    db = next(gen)
-    assert db is not None
-    try:
-        next(gen)
-    except StopIteration:
-        pass  # expected — generator exhausted after yield
-    sys.modules.pop("db.session", None)
+    from unittest.mock import MagicMock, patch
+    import db.session as session_module
+
+    mock_db = MagicMock()
+    mock_session_cls = MagicMock(return_value=mock_db)
+
+    with patch.object(session_module, "SessionLocal", mock_session_cls):
+        gen = session_module.get_session()
+        db = next(gen)
+        assert db is mock_db
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+    mock_db.close.assert_called_once()
