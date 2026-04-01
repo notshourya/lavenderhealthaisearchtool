@@ -1,0 +1,29 @@
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary: #4d65ff;
+  --accent: #ff4d8b;
+  --ink: #1a1a2e;
+  --surface: #ffffff;
+  --subtle: #f4f5ff;
+}
+
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: 'Open Sans', system-ui, sans-serif;
+  background-color: #f8f9ff;
+  color: var(--ink);
+}
+
+.flag-highlight {
+  background: linear-gradient(120deg, rgba(255,77,139,0.15) 0%, rgba(255,77,139,0.15) 100%);
+  border-bottom: 2px solid rgba(255,77,139,0.5);
+  border-radius: 2px;
+}
