@@ -15,9 +15,10 @@ def test_config_loads_database_url(monkeypatch):
     monkeypatch.setenv("APOLLO_API_KEY", "test_apollo")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test_anthropic")
 
+    import sys
     import importlib
-    import config
-    importlib.reload(config)
+    sys.modules.pop("config", None)
+    config = importlib.import_module("config")
 
     assert config.DATABASE_URL == "postgresql://test:test@localhost/testdb"
 
@@ -30,9 +31,10 @@ def test_config_defaults(monkeypatch):
     monkeypatch.delenv("MAX_REVIEWS_DEFAULT", raising=False)
     monkeypatch.delenv("PROXY_URL", raising=False)
 
+    import sys
     import importlib
-    import config
-    importlib.reload(config)
+    sys.modules.pop("config", None)
+    config = importlib.import_module("config")
 
     assert config.REDIS_URL == "redis://localhost:6379/0"
     assert config.MAX_REVIEWS_DEFAULT == 200
@@ -44,8 +46,11 @@ def test_config_raises_if_database_url_missing(monkeypatch):
     monkeypatch.setenv("APOLLO_API_KEY", "x")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
 
+    import sys
     import importlib
-    import config
+
+    # Remove cached module so import_module triggers fresh execution
+    sys.modules.pop("config", None)
 
     with pytest.raises(KeyError):
-        importlib.reload(config)
+        importlib.import_module("config")
