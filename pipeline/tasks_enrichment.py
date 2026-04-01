@@ -1,7 +1,115 @@
-# Enrichment + Drafter tasks — implemented in Plan 03
+from contextlib import contextmanager
+from datetime import datetime, timezone
+
+from db.models import (
+    CityRun, Clinic, Contact, EmailDraft,
+    ClinicStatus, DraftStatus, CityRunStatus,
+)
+from enrichment.apollo_client import find_clinic_contacts
+from drafter.email_drafter import draft_outreach_email
 from pipeline.celery_app import celery_app
+import config
 
 
-@celery_app.task
-def enrich_clinics_task(city_run_id: str) -> None:
-    pass  # Placeholder — implemented in Plan 03
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@contextmanager
+def SessionLocal():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    engine = create_engine(config.DATABASE_URL, pool_pre_ping=True)
+    Session = sessionmaker(bind=engine)
+    db = Session()
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+@celery_app.task(bind=True, max_retries=5, default_retry_delay=120, rate_limit="30/m")
+def enrich_clinics_task(self, city_run_id: str) -> None:
+    with SessionLocal() as db:
+        clinics = (
+            db.query(Clinic)
+            .filter_by(city_run_id=city_run_id, status=ClinicStatus.QUALIFIED)
+            .all()
+        )
+
+        enriched_count = 0
+        for clinic in clinics:
+            try:
+                contacts = find_clinic_contacts(clinic.name, clinic.city, clinic.state)
+            except Exception as exc:
+                raise self.retry(exc=exc)
+
+            if not contacts:
+                continue  # Stay at QUALIFIED — surfaced in dashboard
+
+            top_contact = contacts[0]
+            db.add(Contact(
+                clinic_id=clinic.id,
+                email=top_contact.email,
+                first_name=top_contact.first_name,
+                last_name=top_contact.last_name,
+                title=top_contact.title,
+                confidence_score=top_contact.confidence_score,
+            ))
+            clinic.status = ClinicStatus.ENRICHED
+            enriched_count += 1
+
+        run = db.query(CityRun).filter_by(id=city_run_id).first()
+        if run:
+            run.total_enriched = enriched_count
+
+    draft_emails_task.delay(city_run_id)
+
+
+@celery_app.task(bind=True, max_retries=3, default_retry_delay=30)
+def draft_emails_task(self, city_run_id: str) -> None:
+    with SessionLocal() as db:
+        clinics = (
+            db.query(Clinic)
+            .filter_by(city_run_id=city_run_id, status=ClinicStatus.ENRICHED)
+            .all()
+        )
+
+        drafted_count = 0
+        for clinic in clinics:
+            if not clinic.contacts:
+                continue
+
+            contact = clinic.contacts[0]
+            flagged_excerpts = [
+                r.text for r in clinic.reviews if r.insurance_flag
+            ][:3]
+
+            try:
+                result = draft_outreach_email(
+                    clinic_name=clinic.name,
+                    contact_first_name=contact.first_name,
+                    flagged_review_excerpts=flagged_excerpts,
+                )
+            except Exception as exc:
+                raise self.retry(exc=exc)
+
+            db.add(EmailDraft(
+                clinic_id=clinic.id,
+                contact_id=contact.id,
+                subject=result.subject,
+                body=result.body,
+                subject_variants=result.subject_variants,
+            ))
+            clinic.status = ClinicStatus.DRAFTED
+            drafted_count += 1
+
+        run = db.query(CityRun).filter_by(id=city_run_id).first()
+        if run:
+            run.total_drafted = drafted_count
+            run.status = CityRunStatus.COMPLETED
+            run.completed_at = utcnow()
