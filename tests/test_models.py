@@ -153,3 +153,19 @@ def test_clinic_relationships(session):
 
     assert len(clinic.reviews) == 2
     assert clinic.city_run.city == "Houston"
+
+
+def test_get_session_yields_and_closes(monkeypatch):
+    import sys
+    monkeypatch.setenv("DATABASE_URL", "postgresql://lavender:lavender@localhost:5432/lavenderhealth")
+    monkeypatch.setenv("APOLLO_API_KEY", "test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    from db.session import get_session
+    gen = get_session()
+    db = next(gen)
+    assert db is not None
+    try:
+        next(gen)
+    except StopIteration:
+        pass  # expected — generator exhausted after yield
+    sys.modules.pop("db.session", None)
