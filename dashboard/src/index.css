@@ -1,7 +1,19 @@
 @import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap');
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #4d65ff;
+  --color-accent: #ff4d8b;
+  --color-surface: #ffffff;
+  --color-ink: #1a1a2e;
+  --color-muted: #6b7280;
+  --color-subtle: #f4f5ff;
+  --font-family-sans: "Open Sans", system-ui, sans-serif;
+  --border-radius-card: 12px;
+  --border-radius-btn: 8px;
+  --shadow-card: 0 2px 12px rgba(77,101,255,0.08);
+  --shadow-card-hover: 0 4px 24px rgba(77,101,255,0.16);
+}
 
 :root {
   --primary: #4d65ff;
