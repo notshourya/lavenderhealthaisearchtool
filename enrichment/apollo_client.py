@@ -45,7 +45,6 @@ def find_clinic_contacts(name: str, city: str, state: str) -> list[ApolloContact
     Returns contacts sorted by title priority, filtered to verified emails only.
     """
     payload = {
-        "api_key": config.APOLLO_API_KEY,
         "q_organization_name": f"{name} dental",
         "q_organization_locations": [f"{city}, {state}"],
         "titles": PRIORITY_TITLES,
@@ -53,7 +52,12 @@ def find_clinic_contacts(name: str, city: str, state: str) -> list[ApolloContact
     }
 
     try:
-        response = httpx.post(APOLLO_PEOPLE_URL, json=payload, timeout=30)
+        response = httpx.post(
+            APOLLO_PEOPLE_URL,
+            json=payload,
+            headers={"X-Api-Key": config.APOLLO_API_KEY, "Content-Type": "application/json"},
+            timeout=30,
+        )
     except httpx.RequestError:
         return []
 
