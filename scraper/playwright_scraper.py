@@ -1,3 +1,16 @@
+"""
+Playwright scraper for Google Maps dental clinic listings.
+
+Strategy:
+  - Look up zip codes for the target city (via the `zipcodes` package)
+  - Search "dental clinics near {zipcode}" for each zip in parallel
+  - Deduplicate clinics by place_id across all zip batches
+  - Within each zip search, scrape clinic detail pages concurrently (semaphore)
+
+This gives comprehensive city coverage instead of the ~20-result cap
+that a single city-level search returns.
+"""
+
 import asyncio
 import hashlib
 import logging
@@ -14,8 +27,12 @@ import config
 
 log = logging.getLogger(__name__)
 
-# Max clinic pages open simultaneously
-_CONCURRENCY = 3
+# Clinic detail pages open simultaneously per browser context
+_CLINIC_CONCURRENCY = 3
+# Zip-code search pages open simultaneously
+_ZIP_CONCURRENCY = 2
+# Max zip codes to search per city (sample most-populated ones)
+_MAX_ZIPS = 40
 
 
 @dataclass
@@ -42,8 +59,17 @@ class ClinicData:
     reviews: list[ReviewData] = field(default_factory=list)
 
 
-def build_search_query(city: str, state: str) -> str:
-    return f"dental clinics in {city}, {state}"
+def get_zip_codes(city: str, state: str, max_zips: int = _MAX_ZIPS) -> list[str]:
+    """Return up to max_zips zip codes for the city, sorted by population desc."""
+    try:
+        import zipcodes
+        results = zipcodes.filter_by(city=city, state=state)
+        # Sort by population descending so we prioritise denser areas
+        results.sort(key=lambda z: int(z.get("population") or 0), reverse=True)
+        return [z["zip_code"] for z in results[:max_zips]]
+    except Exception as e:
+        log.warning(f"Could not look up zip codes for {city}, {state}: {e}")
+        return []
 
 
 def parse_place_id_from_url(url: str, fallback_name: str = "") -> str | None:
@@ -58,133 +84,170 @@ def parse_place_id_from_url(url: str, fallback_name: str = "") -> str | None:
 async def scrape_city(city: str, state: str, max_reviews: int = 200) -> list[ClinicData]:
     from playwright.async_api import async_playwright
 
-    clinics: list[ClinicData] = []
+    zip_codes = get_zip_codes(city, state)
+    if not zip_codes:
+        # Fallback: single city-level search
+        zip_codes = [None]
+        log.warning(f"No zip codes found for {city}, {state} — falling back to city search")
+    else:
+        log.info(f"Searching {len(zip_codes)} zip codes for {city}, {state}")
+
+    seen_place_ids: set[str] = set()
+    all_clinics: list[ClinicData] = []
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(
             headless=True,
             args=get_browser_launch_args(proxy_url=config.PROXY_URL),
         )
-        context = await browser.new_context(
-            user_agent=get_random_user_agent(),
-            viewport={"width": 1280, "height": 800},
-        )
-        page = await context.new_page()
 
-        query = build_search_query(city, state)
-        url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
-        log.info(f"Navigating to: {url}")
-        await page.goto(url)
-        await page.wait_for_load_state("networkidle")
-        sleep_random(1, 2)
+        clinic_sem = asyncio.Semaphore(_CLINIC_CONCURRENCY)
+        zip_sem = asyncio.Semaphore(_ZIP_CONCURRENCY)
+        seen_lock = asyncio.Lock()
 
-        # Scroll results panel
-        try:
-            results_panel = page.locator('[role="feed"]')
-            prev_count = 0
-            for _ in range(10):
-                await results_panel.evaluate("el => el.scrollTo(0, el.scrollHeight)")
-                sleep_random(1, 2)
-                items = await page.locator('[role="feed"] > div[jsaction]').all()
-                if len(items) == prev_count:
-                    break
-                prev_count = len(items)
-            log.info(f"Found {prev_count} listing items in feed")
-        except Exception as e:
-            log.warning(f"Could not scroll results panel: {e}")
-
-        listing_links = await page.locator('a[href*="/maps/place/"]').all()
-        log.info(f"Found {len(listing_links)} listing links")
-
-        # Build list of (href, name) to scrape
-        targets: list[tuple[str, str]] = []
-        for link in listing_links:
-            href = await link.get_attribute("href") or ""
-            name = await link.get_attribute("aria-label") or ""
-            if name and parse_place_id_from_url(href, fallback_name=name):
-                targets.append((href, name))
-
-        await page.close()
-
-        # Scrape clinics concurrently with a semaphore
-        semaphore = asyncio.Semaphore(_CONCURRENCY)
-
-        async def scrape_one(href: str, name: str) -> ClinicData | None:
-            place_id = parse_place_id_from_url(href, fallback_name=name)
-            clinic_data = ClinicData(
-                name=name.strip(),
-                address=None,
-                city=city,
-                state=state,
-                google_maps_url=href,
-                place_id=place_id,
-                overall_rating=None,
-                total_reviews=None,
+        async def scrape_zip(zipcode: str | None) -> list[ClinicData]:
+            """Collect listing links from one zip-code search, then scrape each clinic."""
+            context = await browser.new_context(
+                user_agent=get_random_user_agent(),
+                viewport={"width": 1280, "height": 800},
             )
-            async with semaphore:
-                clinic_page = await context.new_page()
+            results: list[ClinicData] = []
+
+            async with zip_sem:
+                search_page = await context.new_page()
                 try:
-                    await clinic_page.goto(href)
-                    await clinic_page.wait_for_load_state("networkidle")
+                    query = (
+                        f"dental clinics near {zipcode}"
+                        if zipcode
+                        else f"dental clinics in {city}, {state}"
+                    )
+                    url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
+                    log.info(f"Searching: {url}")
+                    await search_page.goto(url)
+                    await search_page.wait_for_load_state("networkidle")
                     sleep_random(1, 2)
 
-                    # Extract rating
+                    # Scroll to load more results
                     try:
-                        rating_el = clinic_page.locator('[aria-label*="stars"]').first
-                        rating_text = await rating_el.get_attribute("aria-label", timeout=3000)
-                        if rating_text:
-                            m = re.search(r"([\d.]+) stars", rating_text)
-                            if m:
-                                clinic_data.overall_rating = float(m.group(1))
-                    except Exception:
-                        pass
+                        panel = search_page.locator('[role="feed"]')
+                        prev = 0
+                        for _ in range(8):
+                            await panel.evaluate("el => el.scrollTo(0, el.scrollHeight)")
+                            sleep_random(1, 1.5)
+                            items = await search_page.locator('[role="feed"] > div[jsaction]').all()
+                            if len(items) == prev:
+                                break
+                            prev = len(items)
+                        log.info(f"  zip {zipcode}: {prev} items in feed")
+                    except Exception as e:
+                        log.warning(f"  zip {zipcode}: could not scroll feed: {e}")
 
-                    # Extract review count
-                    try:
-                        for selector in ['button[jsaction*="reviewDialog"]', 'button[aria-label*="reviews"]', 'span[aria-label*="reviews"]']:
-                            el = clinic_page.locator(selector).first
-                            if await el.count() > 0:
-                                text = await el.inner_text(timeout=3000)
-                                m = re.search(r"([\d,]+)", text)
-                                if m:
-                                    clinic_data.total_reviews = int(m.group(1).replace(",", ""))
-                                    break
-                    except Exception:
-                        pass
+                    listing_links = await search_page.locator('a[href*="/maps/place/"]').all()
 
-                    reviews = await _scrape_reviews(clinic_page, max_reviews)
-                    log.info(f"  {clinic_data.name}: scraped {len(reviews)} reviews")
-                    clinic_data.reviews.extend(reviews)
+                    # Collect new targets (deduplicated globally)
+                    targets: list[tuple[str, str]] = []
+                    for link in listing_links:
+                        href = await link.get_attribute("href") or ""
+                        name = await link.get_attribute("aria-label") or ""
+                        if not name:
+                            continue
+                        place_id = parse_place_id_from_url(href, fallback_name=name)
+                        if not place_id:
+                            continue
+                        async with seen_lock:
+                            if place_id in seen_place_ids:
+                                continue
+                            seen_place_ids.add(place_id)
+                        targets.append((href, name, place_id))
 
-                    if clinic_data.total_reviews and clinic_data.total_reviews >= 200:
-                        low_rated = await _scrape_reviews(clinic_page, max_reviews, sort="lowest")
-                        seen = {r.text for r in clinic_data.reviews}
-                        for r in low_rated:
-                            if r.text not in seen:
-                                clinic_data.reviews.append(r)
-                                seen.add(r.text)
-
-                except Exception as e:
-                    log.warning(f"  Error scraping {clinic_data.name}: {e}")
+                    log.info(f"  zip {zipcode}: {len(targets)} new clinics to scrape")
                 finally:
-                    await clinic_page.close()
+                    await search_page.close()
 
-            return clinic_data
+                # Scrape each clinic detail page concurrently
+                async def scrape_clinic(href: str, name: str, place_id: str) -> ClinicData:
+                    clinic_data = ClinicData(
+                        name=name.strip(),
+                        address=None,
+                        city=city,
+                        state=state,
+                        zip=zipcode,
+                        google_maps_url=href,
+                        place_id=place_id,
+                        overall_rating=None,
+                        total_reviews=None,
+                    )
+                    async with clinic_sem:
+                        page = await context.new_page()
+                        try:
+                            await page.goto(href)
+                            await page.wait_for_load_state("networkidle")
+                            sleep_random(1, 2)
 
-        results = await asyncio.gather(*[scrape_one(href, name) for href, name in targets])
-        clinics = [r for r in results if r is not None]
+                            # Rating
+                            try:
+                                rating_el = page.locator('[aria-label*="stars"]').first
+                                rt = await rating_el.get_attribute("aria-label", timeout=3000)
+                                if rt:
+                                    m = re.search(r"([\d.]+) stars", rt)
+                                    if m:
+                                        clinic_data.overall_rating = float(m.group(1))
+                            except Exception:
+                                pass
+
+                            # Review count
+                            try:
+                                for sel in ['button[jsaction*="reviewDialog"]', 'button[aria-label*="reviews"]', 'span[aria-label*="reviews"]']:
+                                    el = page.locator(sel).first
+                                    if await el.count() > 0:
+                                        t = await el.inner_text(timeout=3000)
+                                        m = re.search(r"([\d,]+)", t)
+                                        if m:
+                                            clinic_data.total_reviews = int(m.group(1).replace(",", ""))
+                                            break
+                            except Exception:
+                                pass
+
+                            revs = await _scrape_reviews(page, max_reviews)
+                            log.info(f"    {clinic_data.name}: {len(revs)} reviews")
+                            clinic_data.reviews.extend(revs)
+
+                            if clinic_data.total_reviews and clinic_data.total_reviews >= 200:
+                                low = await _scrape_reviews(page, max_reviews, sort="lowest")
+                                seen = {r.text for r in clinic_data.reviews}
+                                for r in low:
+                                    if r.text not in seen:
+                                        clinic_data.reviews.append(r)
+                                        seen.add(r.text)
+
+                        except Exception as e:
+                            log.warning(f"    Error scraping {clinic_data.name}: {e}")
+                        finally:
+                            await page.close()
+                    return clinic_data
+
+                clinic_results = await asyncio.gather(
+                    *[scrape_clinic(href, name, pid) for href, name, pid in targets]
+                )
+                results.extend(clinic_results)
+                await context.close()
+
+            return results
+
+        zip_results = await asyncio.gather(*[scrape_zip(z) for z in zip_codes])
+        for batch in zip_results:
+            all_clinics.extend(batch)
 
         await browser.close()
 
-    log.info(f"Scraped {len(clinics)} clinics total")
-    return clinics
+    log.info(f"Scraped {len(all_clinics)} clinics total across {len(zip_codes)} zip codes")
+    return all_clinics
 
 
 async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[ReviewData]:
     reviews: list[ReviewData] = []
 
     try:
-        # Click Reviews tab — try multiple selectors
         clicked_reviews = False
         for selector in [
             'button[aria-label*="reviews" i]',
@@ -207,7 +270,6 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
         await page.wait_for_load_state("networkidle")
         sleep_random(0.5, 1)
 
-        # Sort reviews
         try:
             for selector in ['[aria-label="Sort reviews"]', '[data-value="Sort"]', 'button[aria-label*="Sort" i]']:
                 el = page.locator(selector).first
@@ -223,7 +285,6 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
         except Exception as e:
             log.warning(f"Could not sort reviews: {e}")
 
-        # Collect reviews by scrolling
         seen_texts: set[str] = set()
         no_new_count = 0
 
@@ -237,7 +298,6 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
 
             for el in review_els:
                 try:
-                    # Expand "More"
                     for more_sel in ['[aria-label="See more"]', 'button:has-text("More")']:
                         more_btn = el.locator(more_sel)
                         if await more_btn.count() > 0:
