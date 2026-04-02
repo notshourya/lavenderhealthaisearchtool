@@ -85,8 +85,8 @@ def qualifies_for_llm(review_texts: list[str]) -> bool:
         tier1_total += s.tier1_hits
         tier2_total += s.tier2_hits
 
-    if tier1_total >= 2:
+    if tier1_total >= 1:
         return True
-    if (tier1_total + tier2_total) >= 4:
+    if (tier1_total + tier2_total) >= 2:
         return True
     return False
