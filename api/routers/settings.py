@@ -7,7 +7,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 # In-memory store — keys are set at startup via env vars
 _settings: dict = {
     "apollo_api_key": "",
-    "anthropic_api_key": "",
+    "gemini_api_key": "",
     "proxy_url": "",
     "max_reviews_default": 200,
 }
@@ -15,7 +15,7 @@ _settings: dict = {
 
 class SettingsPayload(BaseModel):
     apollo_api_key: str | None = None
-    anthropic_api_key: str | None = None
+    gemini_api_key: str | None = None
     proxy_url: str | None = None
     max_reviews_default: int | None = None
 
@@ -25,7 +25,7 @@ def get_settings():
     return {
         **_settings,
         "apollo_api_key": "***" if _settings["apollo_api_key"] else "",
-        "anthropic_api_key": "***" if _settings["anthropic_api_key"] else "",
+        "gemini_api_key": "***" if _settings["gemini_api_key"] else "",
     }
 
 
@@ -33,8 +33,8 @@ def get_settings():
 def update_settings(payload: SettingsPayload):
     if payload.apollo_api_key is not None:
         _settings["apollo_api_key"] = payload.apollo_api_key
-    if payload.anthropic_api_key is not None:
-        _settings["anthropic_api_key"] = payload.anthropic_api_key
+    if payload.gemini_api_key is not None:
+        _settings["gemini_api_key"] = payload.gemini_api_key
     if payload.proxy_url is not None:
         _settings["proxy_url"] = payload.proxy_url
     if payload.max_reviews_default is not None:

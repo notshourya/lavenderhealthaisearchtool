@@ -12,7 +12,7 @@ export default function SettingsPage() {
 
   const [form, setForm] = useState({
     apollo_api_key: '',
-    anthropic_api_key: '',
+    gemini_api_key: '',
     proxy_url: '',
     max_reviews_default: 200,
   })
@@ -45,7 +45,7 @@ export default function SettingsPage() {
           <h2 className="font-semibold text-ink mb-4">API Keys</h2>
           <div className="flex flex-col gap-4">
             <Field label="Apollo API Key" name="apollo_api_key" type="password" />
-            <Field label="Anthropic API Key" name="anthropic_api_key" type="password" />
+            <Field label="Gemini API Key" name="gemini_api_key" type="password" />
           </div>
         </Card>
 
