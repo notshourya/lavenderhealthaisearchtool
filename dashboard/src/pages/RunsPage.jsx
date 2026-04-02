@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { gsap } from 'gsap'
+import { Activity } from 'lucide-react'
 import { useRuns, useCreateRun } from '../api/runs'
 import Card from '../components/Card'
 import Button from '../components/Button'
@@ -14,47 +15,30 @@ function NewRunModal({ isOpen, onClose }) {
 
   const handleSubmit = (e) => {
     e.preventDefault()
-    createRun.mutate({ city, state: state.toUpperCase(), max_reviews: maxReviews }, {
-      onSuccess: () => { onClose(); setCity(''); setState('') },
-    })
+    createRun.mutate(
+      { city, state: state.toUpperCase(), max_reviews: maxReviews },
+      { onSuccess: () => { onClose(); setCity(''); setState('') } }
+    )
   }
+
+  const inputCls = 'w-full border border-subtle rounded-btn px-4 py-2.5 text-sm bg-surface focus:outline-none focus:ring-2 focus:ring-primary/30'
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="New City Run">
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
         <div>
-          <label className="block text-sm font-semibold text-ink mb-1">City</label>
-          <input
-            value={city}
-            onChange={e => setCity(e.target.value)}
-            placeholder="e.g. Houston"
-            required
-            className="w-full border border-gray-200 rounded-btn px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-          />
+          <label className="block text-xs font-semibold text-muted mb-1 uppercase tracking-wide">City</label>
+          <input value={city} onChange={e => setCity(e.target.value)} placeholder="e.g. Houston" required className={inputCls} />
         </div>
         <div>
-          <label className="block text-sm font-semibold text-ink mb-1">State</label>
-          <input
-            value={state}
-            onChange={e => setState(e.target.value.toUpperCase())}
-            placeholder="e.g. TX"
-            maxLength={2}
-            required
-            className="w-full border border-gray-200 rounded-btn px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-          />
+          <label className="block text-xs font-semibold text-muted mb-1 uppercase tracking-wide">State</label>
+          <input value={state} onChange={e => setState(e.target.value.toUpperCase())} placeholder="TX" maxLength={2} required className={inputCls} />
         </div>
         <div>
-          <label className="block text-sm font-semibold text-ink mb-1">Max Reviews Per Clinic</label>
-          <input
-            type="number"
-            value={maxReviews}
-            onChange={e => setMaxReviews(Number(e.target.value))}
-            min={20}
-            max={500}
-            className="w-full border border-gray-200 rounded-btn px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
-          />
+          <label className="block text-xs font-semibold text-muted mb-1 uppercase tracking-wide">Max Reviews Per Clinic</label>
+          <input type="number" value={maxReviews} onChange={e => setMaxReviews(Number(e.target.value))} min={20} max={500} className={inputCls} />
         </div>
-        <div className="flex gap-2 justify-end mt-2">
+        <div className="flex gap-2 justify-end pt-2">
           <Button variant="ghost" onClick={onClose} type="button">Cancel</Button>
           <Button type="submit" disabled={createRun.isPending}>
             {createRun.isPending ? 'Starting…' : 'Start Run'}
@@ -65,16 +49,45 @@ function NewRunModal({ isOpen, onClose }) {
   )
 }
 
-function ProgressBar({ label, value, total, color = 'bg-primary' }) {
-  const pct = total > 0 ? Math.round((value / total) * 100) : 0
+function StatCard({ label, value, variant }) {
   return (
-    <div className="flex items-center gap-2 text-xs text-muted">
-      <span className="w-16 text-right">{label}</span>
-      <div className="flex-1 h-1.5 bg-subtle rounded-full overflow-hidden">
-        <div className={`h-full ${color} rounded-full transition-all duration-500`} style={{ width: `${pct}%` }} />
+    <Card variant={variant} className="flex flex-col gap-1">
+      <span className="text-3xl font-bold text-ink">{value ?? 0}</span>
+      <span className="text-xs font-semibold text-muted uppercase tracking-wide">{label}</span>
+    </Card>
+  )
+}
+
+function RunCard({ run }) {
+  const found = run.total_clinics_found || 0
+  const stats = [
+    { label: 'Found',     value: found,                color: 'bg-card-blue'     },
+    { label: 'Qualified', value: run.total_qualified,  color: 'bg-card-lavender' },
+    { label: 'Enriched',  value: run.total_enriched,   color: 'bg-card-green'    },
+    { label: 'Drafted',   value: run.total_drafted,    color: 'bg-card-orange'   },
+  ]
+
+  return (
+    <Card>
+      <div className="flex items-start justify-between mb-4">
+        <div>
+          <div className="font-bold text-ink text-lg">{run.city}, {run.state}</div>
+          <div className="text-xs text-muted mt-0.5">
+            {new Date(run.created_at).toLocaleString()} · via {run.triggered_by}
+          </div>
+        </div>
+        <StatusBadge status={run.status} />
       </div>
-      <span className="w-8">{value}</span>
-    </div>
+
+      <div className="grid grid-cols-4 gap-2">
+        {stats.map(({ label, value, color }) => (
+          <div key={label} className={`${color} rounded-xl px-3 py-2 text-center`}>
+            <div className="text-xl font-bold text-ink">{value ?? 0}</div>
+            <div className="text-xs text-muted">{label}</div>
+          </div>
+        ))}
+      </div>
+    </Card>
   )
 }
 
@@ -83,53 +96,60 @@ export default function RunsPage() {
   const [modalOpen, setModalOpen] = useState(false)
   const listRef = useRef(null)
 
+  const totals = runs.reduce(
+    (acc, r) => ({
+      found:     acc.found     + (r.total_clinics_found || 0),
+      qualified: acc.qualified + (r.total_qualified     || 0),
+      enriched:  acc.enriched  + (r.total_enriched      || 0),
+      drafted:   acc.drafted   + (r.total_drafted        || 0),
+    }),
+    { found: 0, qualified: 0, enriched: 0, drafted: 0 }
+  )
+
   useEffect(() => {
     if (!isLoading && listRef.current) {
       gsap.fromTo(
         listRef.current.children,
         { opacity: 0, y: 16 },
-        { opacity: 1, y: 0, stagger: 0.06, duration: 0.4, ease: 'power2.out' }
+        { opacity: 1, y: 0, stagger: 0.07, duration: 0.35, ease: 'power2.out' }
       )
     }
   }, [isLoading])
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-8">
         <div>
-          <h1 className="text-2xl font-bold text-ink">Pipeline Runs</h1>
-          <p className="text-muted text-sm mt-0.5">Trigger and monitor city scraping runs</p>
+          <h1 className="text-3xl font-bold text-ink">Pipeline Runs</h1>
+          <p className="text-muted text-sm mt-1">Trigger and monitor city scraping runs</p>
         </div>
         <Button onClick={() => setModalOpen(true)}>+ New Run</Button>
       </div>
 
+      {/* Bento stat cards */}
+      {runs.length > 0 && (
+        <div className="grid grid-cols-4 gap-4 mb-8">
+          <StatCard label="Clinics Found"  value={totals.found}     variant="blue"    />
+          <StatCard label="Qualified"      value={totals.qualified} variant="lavender" />
+          <StatCard label="Enriched"       value={totals.enriched}  variant="green"   />
+          <StatCard label="Drafted"        value={totals.drafted}   variant="orange"  />
+        </div>
+      )}
+
+      {/* Run list */}
       {isLoading ? (
         <div className="text-muted text-sm">Loading…</div>
       ) : runs.length === 0 ? (
         <Card>
-          <p className="text-muted text-center py-8">No runs yet. Start your first run above.</p>
+          <div className="flex flex-col items-center py-12 gap-3 text-muted">
+            <Activity size={36} strokeWidth={1.2} />
+            <p className="text-sm">No runs yet — trigger your first city scan above</p>
+          </div>
         </Card>
       ) : (
         <div ref={listRef} className="flex flex-col gap-4">
-          {runs.map(run => (
-            <Card key={run.id} className="hover:shadow-card-hover transition-shadow duration-200">
-              <div className="flex items-start justify-between mb-3">
-                <div>
-                  <div className="font-semibold text-ink">{run.city}, {run.state}</div>
-                  <div className="text-xs text-muted mt-0.5">
-                    {new Date(run.created_at).toLocaleString()} · via {run.triggered_by}
-                  </div>
-                </div>
-                <StatusBadge status={run.status} />
-              </div>
-              <div className="flex flex-col gap-1.5 mt-3">
-                <ProgressBar label="Found" value={run.total_clinics_found} total={run.total_clinics_found || 1} color="bg-gray-400" />
-                <ProgressBar label="Qualified" value={run.total_qualified} total={run.total_clinics_found || 1} color="bg-yellow-400" />
-                <ProgressBar label="Enriched" value={run.total_enriched} total={run.total_clinics_found || 1} color="bg-purple-400" />
-                <ProgressBar label="Drafted" value={run.total_drafted} total={run.total_clinics_found || 1} color="bg-primary" />
-              </div>
-            </Card>
-          ))}
+          {runs.map(run => <RunCard key={run.id} run={run} />)}
         </div>
       )}
 
