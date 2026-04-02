@@ -37,10 +37,11 @@ def scrape_city_task(self, city_run_id: str) -> None:
         if not run:
             return
         run.status = CityRunStatus.RUNNING
+        city, state, max_reviews = run.city, run.state, run.max_reviews
 
     try:
         clinic_data_list = asyncio.run(
-            scrape_city(run.city, run.state, run.max_reviews)
+            scrape_city(city, state, max_reviews)
         )
     except Exception as exc:
         with SessionLocal() as db:
