@@ -5,7 +5,7 @@ celery_app = Celery(
     "lavenderhealth",
     broker=config.REDIS_URL,
     backend=config.REDIS_URL,
-    include=["pipeline.tasks"],
+    include=["pipeline.tasks", "pipeline.tasks_enrichment"],
 )
 
 celery_app.conf.update(
