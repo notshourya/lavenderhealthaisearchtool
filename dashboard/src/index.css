@@ -1,26 +1,27 @@
-@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Open+Sans:wght@300;400;600;700;800&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --color-primary: #4d65ff;
-  --color-accent: #ff4d8b;
-  --color-surface: #ffffff;
-  --color-ink: #1a1a2e;
+  --color-bg: #f5f4f0;
+  --color-sidebar: #111118;
+  --color-sidebar-hover: #1e1e2a;
+  --color-primary: #7c4dbe;
+  --color-primary-hover: #6a3da8;
+  --color-ink: #1a2744;
   --color-muted: #6b7280;
-  --color-subtle: #f4f5ff;
+  --color-surface: #ffffff;
+  --color-subtle: #eceae4;
+  --color-card-lavender: #e8dff5;
+  --color-card-blue: #c5d9f0;
+  --color-card-orange: #f5c4a0;
+  --color-card-green: #c5e8d5;
+  --color-success: #16a34a;
+  --color-danger: #dc2626;
   --font-family-sans: "Open Sans", system-ui, sans-serif;
-  --border-radius-card: 12px;
-  --border-radius-btn: 8px;
-  --shadow-card: 0 2px 12px rgba(77,101,255,0.08);
-  --shadow-card-hover: 0 4px 24px rgba(77,101,255,0.16);
-}
-
-:root {
-  --primary: #4d65ff;
-  --accent: #ff4d8b;
-  --ink: #1a1a2e;
-  --surface: #ffffff;
-  --subtle: #f4f5ff;
+  --border-radius-card: 16px;
+  --border-radius-btn: 999px;
+  --shadow-card: 0 1px 4px rgba(0,0,0,0.06);
+  --shadow-card-hover: 0 4px 16px rgba(124,77,190,0.12);
 }
 
 * {
@@ -29,13 +30,13 @@
 }
 
 body {
-  font-family: 'Open Sans', system-ui, sans-serif;
-  background-color: #f8f9ff;
-  color: var(--ink);
+  font-family: "Open Sans", system-ui, sans-serif;
+  background-color: #f5f4f0;
+  color: #1a2744;
 }
 
 .flag-highlight {
-  background: linear-gradient(120deg, rgba(255,77,139,0.15) 0%, rgba(255,77,139,0.15) 100%);
-  border-bottom: 2px solid rgba(255,77,139,0.5);
+  background: linear-gradient(120deg, rgba(124,77,190,0.15) 0%, rgba(124,77,190,0.15) 100%);
+  border-bottom: 2px solid rgba(124,77,190,0.4);
   border-radius: 2px;
 }
