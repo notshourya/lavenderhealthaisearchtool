@@ -51,7 +51,7 @@ def draft_outreach_email(
         review_excerpts=excerpts_text,
     )
     response = _client.models.generate_content(
-        model="gemini-2.5-pro",
+        model="gemini-2.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
     )
