@@ -1,7 +1,8 @@
 import re
 from dataclasses import dataclass
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 import config
 
@@ -11,11 +12,7 @@ Your tone is empathetic, professional, and non-accusatory. You acknowledge patie
 
 Write emails that feel personal and specific — reference the clinic by name, use the contact's first name, and briefly acknowledge the pattern you noticed. Keep it concise (under 150 words for the body)."""
 
-genai.configure(api_key=config.GEMINI_API_KEY)
-_model = genai.GenerativeModel(
-    model_name="gemini-2.5-pro",
-    system_instruction=SYSTEM_PROMPT,
-)
+_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 EMAIL_PROMPT = """Write a cold outreach email to a dental clinic whose online reviews show a pattern of insurance claim complaints.
 
@@ -53,7 +50,11 @@ def draft_outreach_email(
         contact_first_name=first_name,
         review_excerpts=excerpts_text,
     )
-    response = _model.generate_content(prompt)
+    response = _client.models.generate_content(
+        model="gemini-2.5-pro",
+        contents=prompt,
+        config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+    )
     raw = response.text.strip()
     return _parse_email_response(raw)
 

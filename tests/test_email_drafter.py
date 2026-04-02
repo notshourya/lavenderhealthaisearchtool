@@ -24,8 +24,8 @@ BODY:
 
 
 def test_draft_returns_email_draft_result():
-    with patch("drafter.email_drafter._model") as mock_model:
-        mock_model.generate_content.return_value = make_mock_response(SAMPLE_LLM_OUTPUT)
+    with patch("drafter.email_drafter._client") as mock_client:
+        mock_client.models.generate_content.return_value = make_mock_response(SAMPLE_LLM_OUTPUT)
         result = draft_outreach_email(
             clinic_name="Bright Smiles Dental",
             contact_first_name="Jane",
@@ -35,8 +35,8 @@ def test_draft_returns_email_draft_result():
 
 
 def test_draft_extracts_subject():
-    with patch("drafter.email_drafter._model") as mock_model:
-        mock_model.generate_content.return_value = make_mock_response(SAMPLE_LLM_OUTPUT)
+    with patch("drafter.email_drafter._client") as mock_client:
+        mock_client.models.generate_content.return_value = make_mock_response(SAMPLE_LLM_OUTPUT)
         result = draft_outreach_email(
             clinic_name="Bright Smiles Dental",
             contact_first_name="Jane",
@@ -46,8 +46,8 @@ def test_draft_extracts_subject():
 
 
 def test_draft_extracts_three_subject_variants():
-    with patch("drafter.email_drafter._model") as mock_model:
-        mock_model.generate_content.return_value = make_mock_response(SAMPLE_LLM_OUTPUT)
+    with patch("drafter.email_drafter._client") as mock_client:
+        mock_client.models.generate_content.return_value = make_mock_response(SAMPLE_LLM_OUTPUT)
         result = draft_outreach_email(
             clinic_name="Bright Smiles Dental",
             contact_first_name="Jane",
@@ -57,8 +57,8 @@ def test_draft_extracts_three_subject_variants():
 
 
 def test_draft_body_contains_html():
-    with patch("drafter.email_drafter._model") as mock_model:
-        mock_model.generate_content.return_value = make_mock_response(SAMPLE_LLM_OUTPUT)
+    with patch("drafter.email_drafter._client") as mock_client:
+        mock_client.models.generate_content.return_value = make_mock_response(SAMPLE_LLM_OUTPUT)
         result = draft_outreach_email(
             clinic_name="Bright Smiles Dental",
             contact_first_name="Jane",

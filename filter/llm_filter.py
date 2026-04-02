@@ -1,11 +1,10 @@
 from dataclasses import dataclass
 
-import google.generativeai as genai
+from google import genai
 
 import config
 
-genai.configure(api_key=config.GEMINI_API_KEY)
-_model = genai.GenerativeModel("gemini-2.0-flash")
+_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 CLASSIFICATION_PROMPT = """You are reviewing Google reviews for a dental clinic.
 
@@ -25,7 +24,10 @@ class LLMVerdict:
 
 def classify_review(review_text: str) -> LLMVerdict:
     prompt = CLASSIFICATION_PROMPT.format(review_text=review_text)
-    response = _model.generate_content(prompt)
+    response = _client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+    )
     raw = response.text.strip()
     is_yes = raw.upper().startswith("YES")
     reasoning = raw.split(".", 1)[1].strip() if "." in raw else raw
