@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import logging
 import re
@@ -12,6 +13,9 @@ from scraper.anti_detection import (
 import config
 
 log = logging.getLogger(__name__)
+
+# Max clinic pages open simultaneously
+_CONCURRENCY = 3
 
 
 @dataclass
@@ -72,7 +76,7 @@ async def scrape_city(city: str, state: str, max_reviews: int = 200) -> list[Cli
         log.info(f"Navigating to: {url}")
         await page.goto(url)
         await page.wait_for_load_state("networkidle")
-        sleep_random(2, 4)
+        sleep_random(1, 2)
 
         # Scroll results panel
         try:
@@ -80,7 +84,7 @@ async def scrape_city(city: str, state: str, max_reviews: int = 200) -> list[Cli
             prev_count = 0
             for _ in range(10):
                 await results_panel.evaluate("el => el.scrollTo(0, el.scrollHeight)")
-                sleep_random(1.5, 3)
+                sleep_random(1, 2)
                 items = await page.locator('[role="feed"] > div[jsaction]').all()
                 if len(items) == prev_count:
                     break
@@ -92,16 +96,21 @@ async def scrape_city(city: str, state: str, max_reviews: int = 200) -> list[Cli
         listing_links = await page.locator('a[href*="/maps/place/"]').all()
         log.info(f"Found {len(listing_links)} listing links")
 
+        # Build list of (href, name) to scrape
+        targets: list[tuple[str, str]] = []
         for link in listing_links:
             href = await link.get_attribute("href") or ""
             name = await link.get_attribute("aria-label") or ""
-            if not name:
-                continue
+            if name and parse_place_id_from_url(href, fallback_name=name):
+                targets.append((href, name))
 
+        await page.close()
+
+        # Scrape clinics concurrently with a semaphore
+        semaphore = asyncio.Semaphore(_CONCURRENCY)
+
+        async def scrape_one(href: str, name: str) -> ClinicData | None:
             place_id = parse_place_id_from_url(href, fallback_name=name)
-            if not place_id:
-                continue
-
             clinic_data = ClinicData(
                 name=name.strip(),
                 address=None,
@@ -112,56 +121,58 @@ async def scrape_city(city: str, state: str, max_reviews: int = 200) -> list[Cli
                 overall_rating=None,
                 total_reviews=None,
             )
-
-            clinic_page = await context.new_page()
-            try:
-                await clinic_page.goto(href)
-                await clinic_page.wait_for_load_state("networkidle")
-                sleep_random(2, 4)
-
-                # Extract rating
+            async with semaphore:
+                clinic_page = await context.new_page()
                 try:
-                    rating_el = clinic_page.locator('[aria-label*="stars"]').first
-                    rating_text = await rating_el.get_attribute("aria-label", timeout=3000)
-                    if rating_text:
-                        m = re.search(r"([\d.]+) stars", rating_text)
-                        if m:
-                            clinic_data.overall_rating = float(m.group(1))
-                except Exception:
-                    pass
+                    await clinic_page.goto(href)
+                    await clinic_page.wait_for_load_state("networkidle")
+                    sleep_random(1, 2)
 
-                # Extract review count
-                try:
-                    for selector in ['button[jsaction*="reviewDialog"]', 'button[aria-label*="reviews"]', 'span[aria-label*="reviews"]']:
-                        el = clinic_page.locator(selector).first
-                        if await el.count() > 0:
-                            text = await el.inner_text(timeout=3000)
-                            m = re.search(r"([\d,]+)", text)
+                    # Extract rating
+                    try:
+                        rating_el = clinic_page.locator('[aria-label*="stars"]').first
+                        rating_text = await rating_el.get_attribute("aria-label", timeout=3000)
+                        if rating_text:
+                            m = re.search(r"([\d.]+) stars", rating_text)
                             if m:
-                                clinic_data.total_reviews = int(m.group(1).replace(",", ""))
-                                break
-                except Exception:
-                    pass
+                                clinic_data.overall_rating = float(m.group(1))
+                    except Exception:
+                        pass
 
-                reviews = await _scrape_reviews(clinic_page, max_reviews)
-                log.info(f"  {clinic_data.name}: scraped {len(reviews)} reviews")
-                clinic_data.reviews.extend(reviews)
+                    # Extract review count
+                    try:
+                        for selector in ['button[jsaction*="reviewDialog"]', 'button[aria-label*="reviews"]', 'span[aria-label*="reviews"]']:
+                            el = clinic_page.locator(selector).first
+                            if await el.count() > 0:
+                                text = await el.inner_text(timeout=3000)
+                                m = re.search(r"([\d,]+)", text)
+                                if m:
+                                    clinic_data.total_reviews = int(m.group(1).replace(",", ""))
+                                    break
+                    except Exception:
+                        pass
 
-                if clinic_data.total_reviews and clinic_data.total_reviews >= 200:
-                    low_rated = await _scrape_reviews(clinic_page, max_reviews, sort="lowest")
-                    seen = {r.text for r in clinic_data.reviews}
-                    for r in low_rated:
-                        if r.text not in seen:
-                            clinic_data.reviews.append(r)
-                            seen.add(r.text)
+                    reviews = await _scrape_reviews(clinic_page, max_reviews)
+                    log.info(f"  {clinic_data.name}: scraped {len(reviews)} reviews")
+                    clinic_data.reviews.extend(reviews)
 
-            except Exception as e:
-                log.warning(f"  Error scraping {clinic_data.name}: {e}")
-            finally:
-                await clinic_page.close()
+                    if clinic_data.total_reviews and clinic_data.total_reviews >= 200:
+                        low_rated = await _scrape_reviews(clinic_page, max_reviews, sort="lowest")
+                        seen = {r.text for r in clinic_data.reviews}
+                        for r in low_rated:
+                            if r.text not in seen:
+                                clinic_data.reviews.append(r)
+                                seen.add(r.text)
 
-            sleep_random(2, 5)
-            clinics.append(clinic_data)
+                except Exception as e:
+                    log.warning(f"  Error scraping {clinic_data.name}: {e}")
+                finally:
+                    await clinic_page.close()
+
+            return clinic_data
+
+        results = await asyncio.gather(*[scrape_one(href, name) for href, name in targets])
+        clinics = [r for r in results if r is not None]
 
         await browser.close()
 
@@ -194,7 +205,7 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
             return reviews
 
         await page.wait_for_load_state("networkidle")
-        sleep_random(1, 2)
+        sleep_random(0.5, 1)
 
         # Sort reviews
         try:
@@ -202,12 +213,12 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
                 el = page.locator(selector).first
                 if await el.count() > 0:
                     await el.click(timeout=3000)
-                    sleep_random(0.5, 1)
+                    sleep_random(0.3, 0.7)
                     if sort == "newest":
                         await page.locator('li[role="menuitemradio"]:has-text("Newest")').first.click(timeout=3000)
                     else:
                         await page.locator('li[role="menuitemradio"]:has-text("Lowest")').first.click(timeout=3000)
-                    sleep_random(1.5, 3)
+                    sleep_random(0.5, 1)
                     break
         except Exception as e:
             log.warning(f"Could not sort reviews: {e}")
@@ -216,8 +227,7 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
         seen_texts: set[str] = set()
         no_new_count = 0
 
-        for _ in range(50):
-            # Try multiple selectors for review containers
+        for _ in range(30):
             review_els = []
             for selector in ['[data-review-id]', '[jslog*="review"]', 'div[class*="review"]']:
                 els = await page.locator(selector).all()
@@ -232,10 +242,8 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
                         more_btn = el.locator(more_sel)
                         if await more_btn.count() > 0:
                             await more_btn.first.click()
-                            sleep_random(0.1, 0.3)
                             break
 
-                    # Extract text — try multiple selectors
                     text = ""
                     for text_sel in ['.wiI7pd', '.MyEned', 'span[data-expandable-section]', '[class*="review-full-text"]']:
                         text_el = el.locator(text_sel)
@@ -248,7 +256,6 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
                         continue
                     seen_texts.add(text)
 
-                    # Author
                     author = None
                     for author_sel in ['.d4r55', '[class*="author"]', '[data-review-id] div:first-child']:
                         a_el = el.locator(author_sel)
@@ -256,7 +263,6 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
                             author = await a_el.first.inner_text()
                             break
 
-                    # Rating
                     rating = None
                     rating_el = el.locator('[aria-label*="star"]')
                     if await rating_el.count() > 0:
@@ -275,7 +281,7 @@ async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[
 
             prev_len = len(reviews)
             await page.evaluate("window.scrollBy(0, 1200)")
-            sleep_random(1.5, 2.5)
+            sleep_random(1, 1.5)
 
             if len(reviews) == prev_len:
                 no_new_count += 1
