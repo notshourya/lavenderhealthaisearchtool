@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -9,6 +10,8 @@ from scraper.anti_detection import (
     get_browser_launch_args,
 )
 import config
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,21 +43,15 @@ def build_search_query(city: str, state: str) -> str:
 
 
 def parse_place_id_from_url(url: str, fallback_name: str = "") -> str | None:
-    # Try to extract the hex ID from the data parameter
     match = re.search(r"0x[0-9a-f]+:0x[0-9a-f]+", url)
     if match:
         return match.group(0)
-    # Fall back to a hash of the name
     if fallback_name:
         return "hash_" + hashlib.md5(fallback_name.encode()).hexdigest()[:16]
     return None
 
 
 async def scrape_city(city: str, state: str, max_reviews: int = 200) -> list[ClinicData]:
-    """
-    Scrapes Google Maps for dental clinics in the given city.
-    Returns a list of ClinicData with reviews populated.
-    """
     from playwright.async_api import async_playwright
 
     clinics: list[ClinicData] = []
@@ -70,24 +67,30 @@ async def scrape_city(city: str, state: str, max_reviews: int = 200) -> list[Cli
         )
         page = await context.new_page()
 
-        # Navigate to Google Maps search
         query = build_search_query(city, state)
-        await page.goto(f"https://www.google.com/maps/search/{query.replace(' ', '+')}")
+        url = f"https://www.google.com/maps/search/{query.replace(' ', '+')}"
+        log.info(f"Navigating to: {url}")
+        await page.goto(url)
         await page.wait_for_load_state("networkidle")
         sleep_random(2, 4)
 
-        # Scroll results panel to load all listings
-        results_panel = page.locator('[role="feed"]')
-        prev_count = 0
-        while True:
-            await results_panel.evaluate("el => el.scrollTo(0, el.scrollHeight)")
-            sleep_random(1.5, 3)
-            items = await page.locator('[role="feed"] > div[jsaction]').all()
-            if len(items) == prev_count:
-                break
-            prev_count = len(items)
+        # Scroll results panel
+        try:
+            results_panel = page.locator('[role="feed"]')
+            prev_count = 0
+            for _ in range(10):
+                await results_panel.evaluate("el => el.scrollTo(0, el.scrollHeight)")
+                sleep_random(1.5, 3)
+                items = await page.locator('[role="feed"] > div[jsaction]').all()
+                if len(items) == prev_count:
+                    break
+                prev_count = len(items)
+            log.info(f"Found {prev_count} listing items in feed")
+        except Exception as e:
+            log.warning(f"Could not scroll results panel: {e}")
 
         listing_links = await page.locator('a[href*="/maps/place/"]').all()
+        log.info(f"Found {len(listing_links)} listing links")
 
         for link in listing_links:
             href = await link.get_attribute("href") or ""
@@ -110,122 +113,178 @@ async def scrape_city(city: str, state: str, max_reviews: int = 200) -> list[Cli
                 total_reviews=None,
             )
 
-            # Visit clinic page and scrape reviews
             clinic_page = await context.new_page()
-            await clinic_page.goto(href)
-            await clinic_page.wait_for_load_state("networkidle")
-            sleep_random(2, 4)
-
-            # Extract rating and review count
             try:
-                rating_text = await clinic_page.locator('[aria-label*="stars"]').first.get_attribute("aria-label")
-                if rating_text:
-                    rating_match = re.search(r"([\d.]+) stars", rating_text)
-                    if rating_match:
-                        clinic_data.overall_rating = float(rating_match.group(1))
-            except Exception:
-                pass
+                await clinic_page.goto(href)
+                await clinic_page.wait_for_load_state("networkidle")
+                sleep_random(2, 4)
 
-            try:
-                review_count_el = await clinic_page.locator('button[jsaction*="reviewDialog"]').first.inner_text()
-                count_match = re.search(r"([\d,]+)", review_count_el)
-                if count_match:
-                    clinic_data.total_reviews = int(count_match.group(1).replace(",", ""))
-            except Exception:
-                pass
+                # Extract rating
+                try:
+                    rating_el = clinic_page.locator('[aria-label*="stars"]').first
+                    rating_text = await rating_el.get_attribute("aria-label", timeout=3000)
+                    if rating_text:
+                        m = re.search(r"([\d.]+) stars", rating_text)
+                        if m:
+                            clinic_data.overall_rating = float(m.group(1))
+                except Exception:
+                    pass
 
-            # Scrape reviews — newest sort first
-            reviews = await _scrape_reviews(clinic_page, max_reviews)
-            clinic_data.reviews.extend(reviews)
+                # Extract review count
+                try:
+                    for selector in ['button[jsaction*="reviewDialog"]', 'button[aria-label*="reviews"]', 'span[aria-label*="reviews"]']:
+                        el = clinic_page.locator(selector).first
+                        if await el.count() > 0:
+                            text = await el.inner_text(timeout=3000)
+                            m = re.search(r"([\d,]+)", text)
+                            if m:
+                                clinic_data.total_reviews = int(m.group(1).replace(",", ""))
+                                break
+                except Exception:
+                    pass
 
-            # Second pass for high-volume clinics: lowest rated sort
-            if clinic_data.total_reviews and clinic_data.total_reviews >= 200:
-                low_rated = await _scrape_reviews(clinic_page, max_reviews, sort="lowest")
-                seen_texts = {r.text for r in clinic_data.reviews}
-                for r in low_rated:
-                    if r.text not in seen_texts:
-                        clinic_data.reviews.append(r)
-                        seen_texts.add(r.text)
+                reviews = await _scrape_reviews(clinic_page, max_reviews)
+                log.info(f"  {clinic_data.name}: scraped {len(reviews)} reviews")
+                clinic_data.reviews.extend(reviews)
 
-            await clinic_page.close()
+                if clinic_data.total_reviews and clinic_data.total_reviews >= 200:
+                    low_rated = await _scrape_reviews(clinic_page, max_reviews, sort="lowest")
+                    seen = {r.text for r in clinic_data.reviews}
+                    for r in low_rated:
+                        if r.text not in seen:
+                            clinic_data.reviews.append(r)
+                            seen.add(r.text)
+
+            except Exception as e:
+                log.warning(f"  Error scraping {clinic_data.name}: {e}")
+            finally:
+                await clinic_page.close()
+
             sleep_random(2, 5)
             clinics.append(clinic_data)
 
         await browser.close()
 
+    log.info(f"Scraped {len(clinics)} clinics total")
     return clinics
 
 
-async def _scrape_reviews(
-    page,
-    max_reviews: int,
-    sort: str = "newest",
-) -> list[ReviewData]:
-    """Scrape up to max_reviews reviews from the currently open clinic page."""
+async def _scrape_reviews(page, max_reviews: int, sort: str = "newest") -> list[ReviewData]:
     reviews: list[ReviewData] = []
 
     try:
-        # Click the Reviews tab
-        reviews_tab = page.locator('button[aria-label*="reviews"]').first
-        await reviews_tab.click()
+        # Click Reviews tab — try multiple selectors
+        clicked_reviews = False
+        for selector in [
+            'button[aria-label*="reviews" i]',
+            'button[data-tab-index="1"]',
+            '[role="tab"]:has-text("Reviews")',
+        ]:
+            try:
+                el = page.locator(selector).first
+                if await el.count() > 0:
+                    await el.click(timeout=5000)
+                    clicked_reviews = True
+                    break
+            except Exception:
+                continue
+
+        if not clicked_reviews:
+            log.warning("Could not click reviews tab")
+            return reviews
+
         await page.wait_for_load_state("networkidle")
         sleep_random(1, 2)
 
         # Sort reviews
-        sort_button = page.locator('[data-value="Sort"]').first
-        await sort_button.click()
-        sleep_random(0.5, 1)
+        try:
+            for selector in ['[aria-label="Sort reviews"]', '[data-value="Sort"]', 'button[aria-label*="Sort" i]']:
+                el = page.locator(selector).first
+                if await el.count() > 0:
+                    await el.click(timeout=3000)
+                    sleep_random(0.5, 1)
+                    if sort == "newest":
+                        await page.locator('li[role="menuitemradio"]:has-text("Newest")').first.click(timeout=3000)
+                    else:
+                        await page.locator('li[role="menuitemradio"]:has-text("Lowest")').first.click(timeout=3000)
+                    sleep_random(1.5, 3)
+                    break
+        except Exception as e:
+            log.warning(f"Could not sort reviews: {e}")
 
-        if sort == "newest":
-            await page.locator('[data-index="1"]').click()  # Newest
-        else:
-            await page.locator('[data-index="3"]').click()  # Lowest rated
-        sleep_random(1.5, 3)
+        # Collect reviews by scrolling
+        seen_texts: set[str] = set()
+        no_new_count = 0
 
-        # Scroll and collect reviews
-        review_panel = page.locator('[data-review-id]')
-        while len(reviews) < max_reviews:
-            review_els = await review_panel.all()
-            for el in review_els[len(reviews):]:
+        for _ in range(50):
+            # Try multiple selectors for review containers
+            review_els = []
+            for selector in ['[data-review-id]', '[jslog*="review"]', 'div[class*="review"]']:
+                els = await page.locator(selector).all()
+                if els:
+                    review_els = els
+                    break
+
+            for el in review_els:
                 try:
-                    # Expand "More" if present
-                    more_btn = el.locator('[aria-label="See more"]')
-                    if await more_btn.count() > 0:
-                        await more_btn.click()
-                        sleep_random(0.2, 0.5)
+                    # Expand "More"
+                    for more_sel in ['[aria-label="See more"]', 'button:has-text("More")']:
+                        more_btn = el.locator(more_sel)
+                        if await more_btn.count() > 0:
+                            await more_btn.first.click()
+                            sleep_random(0.1, 0.3)
+                            break
 
-                    text_el = el.locator(".MyEned")
-                    text = await text_el.inner_text() if await text_el.count() > 0 else ""
-                    if not text:
+                    # Extract text — try multiple selectors
+                    text = ""
+                    for text_sel in ['.wiI7pd', '.MyEned', 'span[data-expandable-section]', '[class*="review-full-text"]']:
+                        text_el = el.locator(text_sel)
+                        if await text_el.count() > 0:
+                            text = await text_el.first.inner_text()
+                            if text.strip():
+                                break
+
+                    if not text.strip() or text in seen_texts:
                         continue
+                    seen_texts.add(text)
 
-                    author_el = el.locator(".d4r55")
-                    author = await author_el.inner_text() if await author_el.count() > 0 else None
+                    # Author
+                    author = None
+                    for author_sel in ['.d4r55', '[class*="author"]', '[data-review-id] div:first-child']:
+                        a_el = el.locator(author_sel)
+                        if await a_el.count() > 0:
+                            author = await a_el.first.inner_text()
+                            break
 
-                    rating_el = el.locator('[aria-label*="stars"]')
+                    # Rating
                     rating = None
+                    rating_el = el.locator('[aria-label*="star"]')
                     if await rating_el.count() > 0:
-                        ra = await rating_el.get_attribute("aria-label")
+                        ra = await rating_el.first.get_attribute("aria-label")
                         m = re.search(r"(\d) star", ra or "")
                         if m:
                             rating = int(m.group(1))
 
-                    reviews.append(ReviewData(author=author, rating=rating, text=text, date=None))
+                    reviews.append(ReviewData(author=author, rating=rating, text=text.strip(), date=None))
+
                 except Exception:
                     continue
 
             if len(reviews) >= max_reviews:
                 break
 
-            # Scroll down to load more
-            await page.evaluate("window.scrollBy(0, 800)")
-            sleep_random(1, 2)
+            prev_len = len(reviews)
+            await page.evaluate("window.scrollBy(0, 1200)")
+            sleep_random(1.5, 2.5)
 
-            new_count = len(await review_panel.all())
-            if new_count <= len(reviews):
-                break  # No more reviews loaded
+            if len(reviews) == prev_len:
+                no_new_count += 1
+                if no_new_count >= 3:
+                    break
+            else:
+                no_new_count = 0
 
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"Error in _scrape_reviews: {e}")
 
     return reviews[:max_reviews]
