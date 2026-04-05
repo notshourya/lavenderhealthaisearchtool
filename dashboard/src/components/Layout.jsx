@@ -1,60 +1,70 @@
-import { NavLink } from 'react-router-dom'
+import { NavLink, useMatch, useResolvedPath } from 'react-router-dom'
 import { Activity, Building2, Mail, Settings } from 'lucide-react'
 
 const NAV_ITEMS = [
-  { to: '/runs',     label: 'Runs',     Icon: Activity  },
-  { to: '/clinics',  label: 'Clinics',  Icon: Building2 },
-  { to: '/drafts',   label: 'Drafts',   Icon: Mail      },
-  { to: '/settings', label: 'Settings', Icon: Settings  },
+  { to: '/runs',     label: 'Runs',     icon: Activity  },
+  { to: '/clinics',  label: 'Clinics',  icon: Building2 },
+  { to: '/drafts',   label: 'Drafts',   icon: Mail      },
+  { to: '/settings', label: 'Settings', icon: Settings  },
 ]
 
-function LavenderMark() {
+function Monogram() {
   return (
-    <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <circle cx="16" cy="16" r="16" fill="#7c4dbe" fillOpacity="0.2"/>
-      <path d="M16 26V14" stroke="#7c4dbe" strokeWidth="1.8" strokeLinecap="round"/>
-      <ellipse cx="16" cy="11" rx="2.5" ry="3.5" fill="#7c4dbe" opacity="0.9"/>
-      <ellipse cx="12" cy="13" rx="2" ry="3" fill="#7c4dbe" opacity="0.6" transform="rotate(-20 12 13)"/>
-      <ellipse cx="20" cy="13" rx="2" ry="3" fill="#7c4dbe" opacity="0.6" transform="rotate(20 20 13)"/>
-    </svg>
+    <div className="h-10 w-10 rounded-2xl bg-white text-black flex items-center justify-center text-sm font-bold shadow-[0_0_20px_rgba(255,255,255,0.2)]">
+      LH
+    </div>
+  )
+}
+
+function NavItem({ to, label, icon }) {
+  const Icon = icon
+  const resolved = useResolvedPath(to)
+  const isActive = useMatch({ path: resolved.pathname, end: true })
+
+  return (
+    <NavLink
+      to={to}
+      title={label}
+      className={`flex w-full items-center gap-4 px-5 py-3.5 rounded-full transition-all duration-300 ${
+        isActive
+          ? 'bg-white/12 text-white font-medium shadow-sm backdrop-blur-xl border border-white/10'
+          : 'bg-transparent text-zinc-500 hover:bg-white/6 hover:text-zinc-200 border border-transparent'
+      }`}
+    >
+      <Icon size={20} strokeWidth={isActive ? 2.5 : 2} className={isActive ? 'text-white' : 'text-zinc-500'} />
+      <span className={`text-base tracking-tight ${isActive ? 'text-white font-semibold' : 'text-zinc-500 font-medium'}`}>{label}</span>
+    </NavLink>
   )
 }
 
 export default function Layout({ children }) {
   return (
-    <div className="flex min-h-screen bg-bg">
-      {/* Sidebar — 64px, dark, icon-only */}
-      <aside className="w-16 bg-sidebar flex flex-col items-center py-5 gap-2 sticky top-0 h-screen shrink-0">
-        {/* Logo mark */}
-        <div className="mb-4">
-          <LavenderMark />
+    <div className="flex h-screen bg-black text-zinc-100 font-sans antialiased overflow-hidden p-6 gap-6 selection:bg-white/20">
+      {/* Floating Sidebar */}
+      <aside className="w-[280px] bg-zinc-950/80 backdrop-blur-2xl rounded-[32px] flex flex-col gap-10 h-full shrink-0 border border-white/5 shadow-2xl relative z-20">
+        <div className="px-8 pt-10 pb-4">
+          <div className="flex items-center gap-4">
+            <Monogram />
+            <div>
+              <div className="font-bold text-white text-lg tracking-tight leading-tight">Lavender</div>
+              <div className="text-[13px] text-zinc-500 font-medium tracking-wide">Operations</div>
+            </div>
+          </div>
         </div>
 
-        {/* Nav items */}
-        <nav className="flex flex-col items-center gap-1 w-full px-2">
-          {NAV_ITEMS.map(({ to, label, Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              title={label}
-              className={({ isActive }) =>
-                `w-10 h-10 flex items-center justify-center rounded-xl transition-all duration-150 ${
-                  isActive
-                    ? 'bg-primary text-white shadow-sm'
-                    : 'text-muted hover:bg-sidebar-hover hover:text-white'
-                }`
-              }
-            >
-              <Icon size={20} strokeWidth={1.8} />
-            </NavLink>
+        <nav className="flex flex-col gap-3 px-6">
+          {NAV_ITEMS.map(({ to, label, icon }) => (
+            <NavItem key={to} to={to} label={label} icon={icon} />
           ))}
         </nav>
       </aside>
 
-      {/* Main content */}
-      <main className="flex-1 min-h-screen overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-8 py-8">
-          {children}
+      {/* Main Content Area */}
+      <main className="flex-1 h-full relative bg-zinc-950/40 backdrop-blur-3xl rounded-[40px] border border-white/5 shadow-2xl overflow-hidden flex flex-col">
+        <div className="flex-1 overflow-y-auto no-scrollbar relative z-10">
+          <div className="mx-auto w-full max-w-[1600px] px-12 py-16">
+            {children}
+          </div>
         </div>
       </main>
     </div>

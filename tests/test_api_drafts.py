@@ -12,6 +12,7 @@ TEST_DB_URL = "postgresql://lavender:lavender@localhost:5433/lavenderhealth_test
 @pytest.fixture(scope="module")
 def test_engine():
     engine = create_engine(TEST_DB_URL)
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     yield engine
 

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 import httpx
 
@@ -39,17 +40,31 @@ def _title_priority(title: str | None) -> int:
     return 998
 
 
-def find_clinic_contacts(name: str, city: str, state: str) -> list[ApolloContact]:
+def _extract_domain(website: str | None) -> str | None:
+    if not website:
+        return None
+
+    parsed = urlparse(website if "://" in website else f"https://{website}")
+    hostname = parsed.hostname or ""
+    hostname = hostname.lower().lstrip("www.")
+    return hostname or None
+
+
+def find_clinic_contacts(name: str, city: str, state: str, website: str | None = None) -> list[ApolloContact]:
     """
     Query Apollo API for contacts at the given clinic.
     Returns contacts sorted by title priority, filtered to verified emails only.
     """
     payload = {
-        "q_organization_name": f"{name} dental",
+        "q_organization_name": name,
         "q_organization_locations": [f"{city}, {state}"],
         "titles": PRIORITY_TITLES,
         "per_page": 10,
     }
+
+    domain = _extract_domain(website)
+    if domain:
+        payload["q_organization_domains"] = [domain]
 
     try:
         response = httpx.post(
@@ -67,12 +82,17 @@ def find_clinic_contacts(name: str, city: str, state: str) -> list[ApolloContact
     data = response.json()
     people = data.get("people", [])
 
-    contacts = []
+    contacts: list[ApolloContact] = []
+    seen_emails: set[str] = set()
     for person in people:
         email = person.get("email", "")
         status = person.get("email_status", "")
         if not email or status not in VALID_EMAIL_STATUSES:
             continue
+        normalized_email = email.lower().strip()
+        if normalized_email in seen_emails:
+            continue
+        seen_emails.add(normalized_email)
 
         contacts.append(ApolloContact(
             email=email,

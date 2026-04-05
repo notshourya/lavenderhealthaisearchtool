@@ -14,7 +14,7 @@ def stop_scheduler() -> None:
         _scheduler.shutdown(wait=False)
 
 
-def add_city_schedule(city: str, state: str, cron: str, max_reviews: int = 200) -> str:
+def add_city_schedule(city: str, state: str, cron: str, max_reviews: int = 0) -> str:
     job_id = f"{city.lower()}_{state.lower()}"
 
     def run_pipeline():

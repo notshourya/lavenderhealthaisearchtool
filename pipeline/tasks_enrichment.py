@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from db.models import (
     CityRun, Clinic, Contact, EmailDraft,
-    ClinicStatus, DraftStatus, CityRunStatus,
+    ClinicStatus, DraftStatus, CityRunStatus, FaultParty,
 )
 from enrichment.apollo_client import find_clinic_contacts
 from drafter.email_drafter import draft_outreach_email
@@ -44,22 +44,30 @@ def enrich_clinics_task(self, city_run_id: str) -> None:
         enriched_count = 0
         for clinic in clinics:
             try:
-                contacts = find_clinic_contacts(clinic.name, clinic.city, clinic.state)
+                contacts = find_clinic_contacts(clinic.name, clinic.city, clinic.state, clinic.website)
             except Exception as exc:
                 raise self.retry(exc=exc)
 
             if not contacts:
                 continue  # Stay at QUALIFIED — surfaced in dashboard
 
-            top_contact = contacts[0]
-            db.add(Contact(
-                clinic_id=clinic.id,
-                email=top_contact.email,
-                first_name=top_contact.first_name,
-                last_name=top_contact.last_name,
-                title=top_contact.title,
-                confidence_score=top_contact.confidence_score,
-            ))
+            for contact_data in contacts[:3]:
+                existing_contact = (
+                    db.query(Contact)
+                    .filter_by(clinic_id=clinic.id, email=contact_data.email)
+                    .first()
+                )
+                if existing_contact:
+                    continue
+
+                db.add(Contact(
+                    clinic_id=clinic.id,
+                    email=contact_data.email,
+                    first_name=contact_data.first_name,
+                    last_name=contact_data.last_name,
+                    title=contact_data.title,
+                    confidence_score=contact_data.confidence_score,
+                ))
             clinic.status = ClinicStatus.ENRICHED
             enriched_count += 1
 
@@ -86,7 +94,9 @@ def draft_emails_task(self, city_run_id: str) -> None:
 
             contact = clinic.contacts[0]
             flagged_excerpts = [
-                r.text for r in clinic.reviews if r.insurance_flag
+                r.text
+                for r in clinic.reviews
+                if r.fault_party == FaultParty.INSURER or r.insurance_flag
             ][:3]
 
             try:

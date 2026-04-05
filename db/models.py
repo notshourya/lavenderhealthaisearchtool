@@ -45,6 +45,23 @@ class FlagReason(str, PyEnum):
     BOTH = "both"
 
 
+class FaultParty(str, PyEnum):
+    INSURER = "insurer"
+    CLINIC = "clinic"
+    SHARED = "shared"
+    UNCLEAR = "unclear"
+    NONE = "none"
+
+
+class IssueCategory(str, PyEnum):
+    CLAIM_DENIAL = "claim_denial"
+    COVERAGE_CONFUSION = "coverage_confusion"
+    REIMBURSEMENT_DELAY = "reimbursement_delay"
+    AUTHORIZATION_ISSUE = "authorization_issue"
+    BILLING_ERROR = "billing_error"
+    OTHER = "other"
+
+
 class DraftStatus(str, PyEnum):
     DRAFT = "draft"
     APPROVED = "approved"
@@ -64,7 +81,8 @@ class CityRun(Base):
     state = Column(String(2), nullable=False)
     status = Column(Enum(CityRunStatus, values_callable=lambda x: [e.value for e in x]), nullable=False, default=CityRunStatus.PENDING)
     triggered_by = Column(Enum(TriggeredBy, values_callable=lambda x: [e.value for e in x]), nullable=False)
-    max_reviews = Column(Integer, nullable=False, default=200)
+    # 0 means uncapped review scraping.
+    max_reviews = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, nullable=False, default=utcnow)
     completed_at = Column(DateTime, nullable=True)
     total_clinics_found = Column(Integer, nullable=False, default=0)
@@ -73,6 +91,7 @@ class CityRun(Base):
     total_drafted = Column(Integer, nullable=False, default=0)
 
     clinics = relationship("Clinic", back_populates="city_run", cascade="all, delete-orphan", passive_deletes=True)
+    policy_results = relationship("ClinicPolicyResult", back_populates="city_run", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Clinic(Base):
@@ -98,6 +117,7 @@ class Clinic(Base):
     reviews = relationship("Review", back_populates="clinic", cascade="all, delete-orphan", passive_deletes=True)
     contacts = relationship("Contact", back_populates="clinic", cascade="all, delete-orphan", passive_deletes=True)
     email_drafts = relationship("EmailDraft", back_populates="clinic", cascade="all, delete-orphan", passive_deletes=True)
+    policy_results = relationship("ClinicPolicyResult", back_populates="clinic", cascade="all, delete-orphan", passive_deletes=True)
 
 
 class Review(Base):
@@ -111,10 +131,58 @@ class Review(Base):
     text = Column(Text, nullable=False)
     insurance_flag = Column(Boolean, nullable=False, default=False)
     flag_reason = Column(Enum(FlagReason, values_callable=lambda x: [e.value for e in x]), nullable=True)
+    fault_party = Column(
+        Enum(FaultParty, values_callable=lambda x: [e.value for e in x]),
+        nullable=False,
+        default=FaultParty.NONE,
+    )
+    issue_category = Column(
+        Enum(IssueCategory, values_callable=lambda x: [e.value for e in x]),
+        nullable=True,
+    )
+    classification_confidence = Column(Float, nullable=True)
+    llm_severity_score = Column(Integer, nullable=True)
+    explicit_insurance_mention = Column(Boolean, nullable=True)
     keyword_matches = Column(JSONB, nullable=True)
     llm_reasoning = Column(Text, nullable=True)
 
     clinic = relationship("Clinic", back_populates="reviews")
+
+
+class ClinicPolicyResult(Base):
+    __tablename__ = "clinic_policy_results"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    city_run_id = Column(UUID(as_uuid=True), ForeignKey("city_runs.id", ondelete="CASCADE"), nullable=False)
+    clinic_id = Column(UUID(as_uuid=True), ForeignKey("clinics.id", ondelete="CASCADE"), nullable=False)
+    policy_version = Column(String(16), nullable=False, default="v1")
+    qualification_profile = Column(String(32), nullable=False)
+    qualification_threshold = Column(Float, nullable=False)
+    policy_config = Column(JSONB, nullable=False)
+    is_qualified = Column(Boolean, nullable=False)
+    decision_reason = Column(String(100), nullable=False)
+    insurer_fault_reviews = Column(Integer, nullable=False, default=0)
+    clinic_fault_reviews = Column(Integer, nullable=False, default=0)
+    shared_fault_reviews = Column(Integer, nullable=False, default=0)
+    unique_insurer_reviewers = Column(Integer, nullable=False, default=0)
+    dominant_issue_category = Column(String(64), nullable=True)
+    dominant_issue_category_reviews = Column(Integer, nullable=False, default=0)
+    recent_insurer_fault_reviews = Column(Integer, nullable=False, default=0)
+    recent_month_cluster_peak = Column(Integer, nullable=False, default=0)
+    total_reviews_known = Column(Integer, nullable=False, default=0)
+    complaint_rate = Column(Float, nullable=False, default=0.0)
+    effective_insurer_signal = Column(Float, nullable=False, default=0.0)
+    base_score = Column(Float, nullable=False, default=0.0)
+    confidence_score = Column(Float, nullable=False, default=0.0)
+    final_score = Column(Float, nullable=False, default=0.0)
+    insurer_signal_score = Column(Float, nullable=False, default=0.0)
+    complaint_rate_score = Column(Float, nullable=False, default=0.0)
+    recency_score = Column(Float, nullable=False, default=0.0)
+    reviewer_uniqueness_score = Column(Float, nullable=False, default=0.0)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+    city_run = relationship("CityRun", back_populates="policy_results")
+    clinic = relationship("Clinic", back_populates="policy_results")
 
 
 class Contact(Base):

@@ -35,7 +35,12 @@ def cli():
 @cli.command()
 @click.option("--city", required=True, help="City name (e.g. Houston)")
 @click.option("--state", required=True, help="2-letter state code (e.g. TX)")
-@click.option("--max-reviews", default=200, show_default=True, help="Max reviews per clinic")
+@click.option(
+    "--max-reviews",
+    default=config.MAX_REVIEWS_DEFAULT,
+    show_default=True,
+    help="Max reviews per clinic (0 = uncapped)",
+)
 def scrape(city: str, state: str, max_reviews: int):
     """Trigger a new city scrape + filter + enrich + draft pipeline run."""
     with SessionLocal() as db:

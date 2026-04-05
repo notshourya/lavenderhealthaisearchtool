@@ -9,7 +9,8 @@ _settings: dict = {
     "apollo_api_key": "",
     "gemini_api_key": "",
     "proxy_url": "",
-    "max_reviews_default": 200,
+    # 0 means uncapped review scraping.
+    "max_reviews_default": 0,
 }
 
 
@@ -48,7 +49,7 @@ class ScheduleCreate(BaseModel):
     city: str
     state: str
     cron: str  # e.g. "0 9 * * 1" = every Monday 9am
-    max_reviews: int = 200
+    max_reviews: int = 0
 
 
 @router.get("/schedules")

@@ -16,7 +16,7 @@ def test_city_run_create_validates_state():
 
 def test_city_run_create_default_max_reviews():
     run = CityRunCreate(city="Houston", state="TX")
-    assert run.max_reviews == 200
+    assert run.max_reviews == 0
 
 
 def test_draft_patch_status_enum():

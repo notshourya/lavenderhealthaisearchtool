@@ -11,6 +11,7 @@ def db_session():
     from sqlalchemy.orm import sessionmaker
     from db.models import Base
     engine = create_engine("postgresql://lavender:lavender@localhost:5433/lavenderhealth_test")
+    Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)
     session = Session()
@@ -51,6 +52,43 @@ def test_enrich_clinics_task_creates_contact(db_session):
 
     run, clinic = make_qualified_clinic(db_session)
 
+    mock_contacts = [
+        ApolloContact(
+            email="mgr@testdental.com",
+            first_name="Jane",
+            last_name="Doe",
+            title="Office Manager",
+            confidence_score=0.95,
+        ),
+        ApolloContact(
+            email="billing@testdental.com",
+            first_name="Bob",
+            last_name="Smith",
+            title="Billing Coordinator",
+            confidence_score=0.9,
+        ),
+    ]
+
+    with patch("pipeline.tasks_enrichment.find_clinic_contacts", return_value=mock_contacts):
+        with patch("pipeline.tasks_enrichment.SessionLocal") as mock_sl:
+            mock_sl.return_value.__enter__ = MagicMock(return_value=db_session)
+            mock_sl.return_value.__exit__ = MagicMock(return_value=False)
+            enrich_clinics_task(str(run.id))
+
+    db_session.refresh(clinic)
+    assert clinic.status == ClinicStatus.ENRICHED
+    assert len(clinic.contacts) == 2
+    assert clinic.contacts[0].email == "mgr@testdental.com"
+
+
+def test_enrich_clinics_task_uses_clinic_website_when_lookuping_contacts(db_session):
+    from pipeline.tasks_enrichment import enrich_clinics_task
+    from enrichment.apollo_client import ApolloContact
+
+    run, clinic = make_qualified_clinic(db_session)
+    clinic.website = "https://www.testdental.com"
+    db_session.commit()
+
     mock_contact = ApolloContact(
         email="mgr@testdental.com",
         first_name="Jane",
@@ -59,16 +97,13 @@ def test_enrich_clinics_task_creates_contact(db_session):
         confidence_score=0.95,
     )
 
-    with patch("pipeline.tasks_enrichment.find_clinic_contacts", return_value=[mock_contact]):
+    with patch("pipeline.tasks_enrichment.find_clinic_contacts", return_value=[mock_contact]) as mock_lookup:
         with patch("pipeline.tasks_enrichment.SessionLocal") as mock_sl:
             mock_sl.return_value.__enter__ = MagicMock(return_value=db_session)
             mock_sl.return_value.__exit__ = MagicMock(return_value=False)
             enrich_clinics_task(str(run.id))
 
-    db_session.refresh(clinic)
-    assert clinic.status == ClinicStatus.ENRICHED
-    assert len(clinic.contacts) == 1
-    assert clinic.contacts[0].email == "mgr@testdental.com"
+    mock_lookup.assert_called_once_with("Test Dental", "Houston", "TX", "https://www.testdental.com")
 
 
 def test_enrich_clinics_task_stays_qualified_when_no_contact(db_session):

@@ -1,71 +1,81 @@
-import pytest
 from unittest.mock import MagicMock, patch
-from filter.llm_filter import classify_reviews, LLMVerdict, CLASSIFICATION_PROMPT
+
+from filter.llm_filter import (
+    CLASSIFICATION_PROMPT,
+    ReviewClassification,
+    ReviewVerdict,
+    classify_reviews,
+)
 
 
 def make_mock_response(text: str):
     return MagicMock(text=text)
 
 
-def test_classify_yes_response():
+def test_classify_insurer_response():
     with patch("filter.llm_filter._client") as mock_client:
         mock_client.models.generate_content.return_value = make_mock_response(
-            "YES. The reviewer explicitly states their insurance claim was denied and they were charged out of pocket."
+            "VERDICT: INSURER\nCONFIDENCE: 0.91\nSEVERITY: 4\nEXPLICIT_INSURANCE_MENTION: YES\nREASON: The review blames denial and coverage limits rather than clinic misconduct."
         )
-        verdicts = classify_reviews(["They denied my insurance claim and I had to pay $500 out of pocket."])
+        verdicts = classify_reviews(
+            ["My insurance denied the claim and I got stuck paying out of pocket."]
+        )
 
     assert len(verdicts) == 1
-    assert verdicts[0].is_insurance_complaint is True
+    assert verdicts[0].verdict == ReviewVerdict.INSURER
     assert verdicts[0].reasoning != ""
+    assert verdicts[0].severity == 4
+    assert verdicts[0].explicit_insurance_mention is True
 
 
 def test_classify_no_response():
     with patch("filter.llm_filter._client") as mock_client:
         mock_client.models.generate_content.return_value = make_mock_response(
-            "NO. The reviewer mentions waiting time and staff attitude but nothing about insurance claims."
+            "VERDICT: NO\nCONFIDENCE: 0.88\nSEVERITY: 1\nEXPLICIT_INSURANCE_MENTION: NO\nREASON: The review is about wait time and staff attitude, not insurance."
         )
         verdicts = classify_reviews(["The wait was too long and the staff seemed rude."])
 
     assert len(verdicts) == 1
-    assert verdicts[0].is_insurance_complaint is False
+    assert verdicts[0].verdict == ReviewVerdict.NO
+    assert verdicts[0].explicit_insurance_mention is False
 
 
 def test_classify_batch_of_reviews():
-    responses = [
-        "YES. Clear insurance billing complaint.",
-        "NO. General service complaint.",
-        "YES. Mentions denied reimbursement.",
-    ]
-    call_count = 0
-
-    def side_effect(*args, **kwargs):
-        nonlocal call_count
-        resp = make_mock_response(responses[call_count])
-        call_count += 1
-        return resp
+    batch_response = (
+        "ITEM 1\nVERDICT: INSURER\nCONFIDENCE: 0.95\nSEVERITY: 5\nEXPLICIT_INSURANCE_MENTION: YES\nREASON: Coverage denial appears insurer-driven.\n\n"
+        "ITEM 2\nVERDICT: NO\nCONFIDENCE: 0.92\nSEVERITY: 1\nEXPLICIT_INSURANCE_MENTION: NO\nREASON: General service complaint.\n\n"
+        "ITEM 3\nVERDICT: CLINIC\nCONFIDENCE: 0.80\nSEVERITY: 3\nEXPLICIT_INSURANCE_MENTION: YES\nREASON: The clinic is accused of submitting claims incorrectly."
+    )
 
     with patch("filter.llm_filter._client") as mock_client:
-        mock_client.models.generate_content.side_effect = side_effect
+        mock_client.models.generate_content.return_value = make_mock_response(batch_response)
         verdicts = classify_reviews([
-            "They denied my insurance claim.",
+            "They said my insurance denied it.",
             "The wait was terrible.",
-            "Reimbursement was never processed.",
+            "They billed the wrong code to my insurer.",
         ])
 
     assert len(verdicts) == 3
-    assert verdicts[0].is_insurance_complaint is True
-    assert verdicts[1].is_insurance_complaint is False
-    assert verdicts[2].is_insurance_complaint is True
+    assert verdicts[0].verdict == ReviewVerdict.INSURER
+    assert verdicts[1].verdict == ReviewVerdict.NO
+    assert verdicts[2].verdict == ReviewVerdict.CLINIC
+    assert verdicts[0].severity == 5
+    assert verdicts[2].explicit_insurance_mention is True
+    assert mock_client.models.generate_content.call_count == 1
 
 
-def test_llm_verdict_is_dataclass():
-    verdict = LLMVerdict(is_insurance_complaint=True, reasoning="Test")
-    assert verdict.is_insurance_complaint is True
-    assert verdict.reasoning == "Test"
+def test_review_classification_is_dataclass():
+    verdict = ReviewClassification(
+        verdict=ReviewVerdict.SHARED,
+        confidence=0.72,
+        reasoning="Mixed signals.",
+    )
+    assert verdict.verdict == ReviewVerdict.SHARED
+    assert verdict.confidence == 0.72
 
 
 def test_classification_prompt_contains_dental_context():
     assert "dental" in CLASSIFICATION_PROMPT.lower()
     assert "insurance" in CLASSIFICATION_PROMPT.lower()
-    assert "YES" in CLASSIFICATION_PROMPT
-    assert "NO" in CLASSIFICATION_PROMPT
+    assert "INSURER" in CLASSIFICATION_PROMPT
+    assert "CLINIC" in CLASSIFICATION_PROMPT

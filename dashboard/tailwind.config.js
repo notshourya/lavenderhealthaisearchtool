@@ -4,23 +4,27 @@ export default {
   theme: {
     extend: {
       colors: {
-        primary: "#4d65ff",
-        accent: "#ff4d8b",
-        surface: "#ffffff",
-        ink: "#1a1a2e",
-        muted: "#6b7280",
-        subtle: "#f4f5ff",
+        background: "#121212",
+        surface: "#1e1e1e",
+        surfaceHover: "#2a2a2a",
+        border: "#333333",
+        textPrimary: "#f5f5f5",
+        textSecondary: "#a3a3a3",
+        primary: "#ffffff",
+        primaryHover: "#e5e5e5",
+        danger: "#ef4444",
+        dangerHover: "#dc2626",
       },
       fontFamily: {
-        sans: ["Open Sans", "system-ui", "sans-serif"],
+        sans: ["Inter", "system-ui", "sans-serif"],
       },
       borderRadius: {
-        card: "12px",
-        btn: "8px",
+        card: "8px",
+        btn: "6px",
       },
       boxShadow: {
-        card: "0 2px 12px rgba(77,101,255,0.08)",
-        "card-hover": "0 4px 24px rgba(77,101,255,0.16)",
+        card: "0 1px 3px rgba(0,0,0,0.5)",
+        "card-hover": "0 4px 12px rgba(0,0,0,0.5)",
       },
     },
   },

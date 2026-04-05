@@ -17,3 +17,10 @@ export const useClinicReviews = (clinicId) =>
     queryFn: () => client.get(`/clinics/${clinicId}/reviews`).then(r => r.data),
     enabled: !!clinicId,
   })
+
+export const useClinicDetail = (clinicId) =>
+  useQuery({
+    queryKey: ['clinics', clinicId, 'detail'],
+    queryFn: () => client.get(`/clinics/${clinicId}`).then(r => r.data),
+    enabled: !!clinicId,
+  })

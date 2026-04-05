@@ -1,85 +1,134 @@
 """
-Keyword pre-filter — cheap first pass before any LLM calls.
+Keyword pre-filter for insurance-friction reviews.
 
-Tier 1: Phrases that almost certainly indicate a clinic-side billing problem.
-         A single hit warrants LLM investigation.
-
-Tier 2: Phrases that suggest billing frustration but could be ambiguous.
-         Multiple hits across reviews needed to warrant LLM investigation.
-
-Design principle: cast a wide net here (high recall), let the LLM stages
-handle precision. But avoid generic words like "billing" alone that fire
-on every "billing was easy" review.
+The goal here is not to prove clinic fault. It is to cheaply detect reviews
+that are likely about insurance, coverage, claim handling, reimbursement, or
+billing responsibility so the LLM can decide who is actually at fault.
 """
 
 from dataclasses import dataclass, field
 
-# Strong signals — almost always clinic-side issues
+from db.models import IssueCategory
+
+
+# Strong signals that the review is materially about insurance friction.
 TIER1: list[str] = [
     "insurance claim",
-    "insurance denied",
     "claim denied",
+    "insurance denied",
     "claim rejected",
-    "claim not processed",
-    "claim not submitted",
-    "never submitted my claim",
-    "failed to submit",
-    "didn't submit",
-    "explanation of benefits",
+    "insurance won't cover",
+    "insurance didnt cover",
+    "insurance didn't cover",
+    "out of network",
+    "out-of-network",
+    "out of pocket",
+    "reimbursement",
     "eob",
-    "insurance fraud",
-    "billed incorrectly",
-    "billed my insurance",
-    "wrong billing code",
-    "wrong code",
-    "upcoding",
-    "balance billing",
+    "explanation of benefits",
+    "prior authorization",
+    "pre authorization",
+    "pre-auth",
+    "not covered",
+    "coverage denied",
     "insurance won't pay",
     "insurance didn't pay",
+    "insurance hasnt paid",
     "insurance hasn't paid",
-    "insurance reimbursement",
-    "reimbursement",
-    "overcharged",
-    "double charged",
-    "double billed",
-    "charged twice",
-    "collected from insurance and from me",
-    "billed both",
 ]
 
-# Weaker signals — need multiple hits or combined with tier 1
+# Weaker but still relevant context clues.
 TIER2: list[str] = [
     "billing issue",
     "billing problem",
-    "billing error",
     "billing dispute",
-    "charged wrong",
-    "wrong amount",
-    "unexpected charge",
-    "unexpected bill",
-    "hidden fee",
-    "hidden charge",
+    "billing error",
+    "coverage",
+    "deductible",
+    "copay",
+    "co-pay",
+    "benefits",
+    "appeal",
+    "authorization",
+    "preauth",
+    "referred me to insurance",
+    "still waiting",
     "never paid back",
-    "still waiting for refund",
-    "won't refund",
-    "refused to refund",
-    "out of network",
-    "out of pocket",
-    "charged out of pocket",
+    "refund",
 ]
 
-# Fraud/ethics signals — elevate severity when combined with billing context
+# Strong negative sentiment that matters only when paired with insurance terms.
 TIER3: list[str] = [
-    "fraud",
     "scam",
-    "theft",
-    "stole",
+    "fraud",
     "dishonest",
-    "deceptive",
     "misleading",
     "lied about",
-    "false claim",
-    "fake claim",
+    "deceptive",
+]
+
+_CATEGORY_KEYWORDS: list[tuple[IssueCategory, tuple[str, ...]]] = [
+    (
+        IssueCategory.CLAIM_DENIAL,
+        (
+            "claim denied",
+            "claim was denied",
+            "insurance denied",
+            "claim rejected",
+            "coverage denied",
+            "not covered",
+        ),
+    ),
+    (
+        IssueCategory.COVERAGE_CONFUSION,
+        (
+            "out of network",
+            "out-of-network",
+            "coverage",
+            "benefits",
+            "eob",
+            "explanation of benefits",
+            "deductible",
+            "copay",
+            "co-pay",
+        ),
+    ),
+    (
+        IssueCategory.REIMBURSEMENT_DELAY,
+        (
+            "reimbursement",
+            "still waiting",
+            "insurance hasn't paid",
+            "insurance didnt pay",
+            "insurance didn't pay",
+            "insurance won't pay",
+            "refund",
+            "never paid back",
+        ),
+    ),
+    (
+        IssueCategory.AUTHORIZATION_ISSUE,
+        (
+            "prior authorization",
+            "pre authorization",
+            "pre-auth",
+            "preauth",
+            "authorization",
+        ),
+    ),
+    (
+        IssueCategory.BILLING_ERROR,
+        (
+            "billing issue",
+            "billing problem",
+            "billing dispute",
+            "billing error",
+            "billed incorrectly",
+            "double charged",
+            "double billed",
+            "charged twice",
+        ),
+    ),
 ]
 
 
@@ -117,29 +166,40 @@ def qualifies_for_llm(review_texts: list[str]) -> bool:
     """
     Return True if the clinic's reviews as a whole warrant LLM investigation.
 
-    Conservative gate — we want high recall here (don't miss real problems),
-    precision comes from the LLM stages that follow.
+    The gate is broad enough to keep recall high, but not so broad that one
+    isolated mention immediately promotes a clinic.
     """
-    tier1_total = 0
-    tier2_total = 0
-    tier3_total = 0
+    tier1_reviews = 0
+    tier2_reviews = 0
+    tier3_reviews = 0
 
     for text in review_texts:
-        s = score_review(text)
-        tier1_total += s.tier1_hits
-        tier2_total += s.tier2_hits
-        tier3_total += s.tier3_hits
+        score = score_review(text)
+        if score.tier1_hits > 0:
+            tier1_reviews += 1
+        if score.tier2_hits > 0:
+            tier2_reviews += 1
+        if score.tier3_hits > 0:
+            tier3_reviews += 1
 
-    # Any strong-signal mention warrants LLM review
-    if tier1_total >= 1:
+    if tier1_reviews >= 2:
         return True
 
-    # Two or more weaker signals combined
-    if (tier1_total + tier2_total) >= 2:
+    if tier1_reviews >= 1 and tier2_reviews >= 1:
         return True
 
-    # Fraud language even without billing keywords — LLM will sort it out
-    if tier3_total >= 2:
+    if tier2_reviews >= 3:
+        return True
+
+    if tier3_reviews >= 2 and (tier1_reviews + tier2_reviews) >= 1:
         return True
 
     return False
+
+
+def infer_issue_category(text: str) -> IssueCategory:
+    lowered = text.lower()
+    for category, phrases in _CATEGORY_KEYWORDS:
+        if any(phrase in lowered for phrase in phrases):
+            return category
+    return IssueCategory.OTHER

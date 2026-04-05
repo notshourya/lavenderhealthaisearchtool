@@ -6,7 +6,7 @@ from sqlalchemy.exc import IntegrityError
 
 from db.models import (
     Base, CityRun, Clinic, Review, Contact, EmailDraft,
-    CityRunStatus, TriggeredBy, ClinicStatus, FlagReason, DraftStatus,
+    CityRunStatus, TriggeredBy, ClinicStatus, FlagReason, DraftStatus, FaultParty,
 )
 
 TEST_DB_URL = "postgresql://lavender:lavender@localhost:5433/lavenderhealth_test"
@@ -15,6 +15,7 @@ TEST_DB_URL = "postgresql://lavender:lavender@localhost:5433/lavenderhealth_test
 @pytest.fixture(scope="module")
 def engine():
     eng = create_engine(TEST_DB_URL)
+    Base.metadata.drop_all(eng)
     Base.metadata.create_all(eng)
     yield eng
     Base.metadata.drop_all(eng)
@@ -57,7 +58,7 @@ def test_city_run_defaults(session):
     run = make_run(session)
     assert run.id is not None
     assert run.status == CityRunStatus.PENDING
-    assert run.max_reviews == 200
+    assert run.max_reviews == 0
     assert run.total_clinics_found == 0
     assert run.triggered_by == TriggeredBy.CLI
 
@@ -98,6 +99,7 @@ def test_review_defaults(session):
     session.flush()
     assert review.id is not None
     assert review.insurance_flag is False
+    assert review.fault_party == FaultParty.NONE
     assert review.flag_reason is None
 
 

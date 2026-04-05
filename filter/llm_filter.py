@@ -1,26 +1,21 @@
 """
-Two-stage LLM filter for insurance billing complaints.
+Two-stage LLM filter for insurance complaint causality.
 
 Stage 1 — Per-review classification
-  classify_review() asks: is this review the CLINIC'S fault?
-  Returns CONFIRMED | UNCERTAIN | NO + confidence + reasoning.
+  classify_review() asks who is primarily responsible for the complaint.
+  Returns INSURER | CLINIC | SHARED | NO + confidence + reasoning.
 
-  Critical distinction:
-  - CONFIRMED: clinic submitted wrong codes, failed to submit, double-billed,
-    promised to handle insurance and didn't, billed for procedures not performed
-  - UNCERTAIN: billing complaint but unclear who's responsible
-  - NO: patient's plan doesn't cover it, or unrelated complaint
+Stage 2 — Clinic-level aggregation
+  analyze_clinic() asks whether the clinic is being unfairly harmed in
+  public reviews by insurer-driven insurance friction.
 
-Stage 2 — Clinic-level systemic analysis
-  analyze_clinic() gets ALL confirmed + uncertain reviews for one clinic
-  and asks: is this a SYSTEMIC pattern, not isolated incidents?
-  Returns: is_systemic, confidence (0–1), pattern summary, severity.
-
-Both stages use gemini-2.5-flash (fast, low cost, high accuracy).
+Both stages use gemini-2.5-flash.
 """
 
 from dataclasses import dataclass
 from enum import Enum
+import re
+import time
 
 from google import genai
 from google.genai import types
@@ -28,80 +23,107 @@ from google.genai import types
 import config
 
 _client = genai.Client(api_key=config.GEMINI_API_KEY)
+_REVIEW_BATCH_SIZE = config.LLM_REVIEW_BATCH_SIZE
 
-# ── Per-review prompt ─────────────────────────────────────────────────────────
+_REVIEW_SYSTEM = """You are an expert insurance operations analyst reviewing Google reviews for dental clinics.
 
-_REVIEW_SYSTEM = """You are an expert insurance billing auditor reviewing patient Google reviews for dental clinics.
+Your job: determine who is primarily responsible for the insurance-related frustration described in the review.
 
-Your job: determine whether the complaint in a review is the DENTAL CLINIC'S FAULT, not the patient's insurance plan.
+INSURER:
+- the insurer denied the claim because of plan limits, exclusions, waiting periods, or network rules
+- the patient is upset about lack of coverage, prior auth issues, reimbursement delays, or EOB confusion
+- there is no concrete evidence that the clinic submitted the claim incorrectly or acted deceptively
 
-CONFIRMED (clinic is responsible):
-- Clinic submitted wrong billing codes → insurance denied
-- Clinic promised to submit claims and never did
-- Clinic billed for procedures never performed
-- Clinic double-billed patient and/or insurance
-- Clinic refused to correct a billing error or resubmit a claim
-- Clinic collected copay AND full payment, or billed more than the contracted rate
-- Clinic misrepresented what insurance would cover before treatment
+CLINIC:
+- the clinic submitted the wrong billing code
+- the clinic promised to file claims and never did
+- the clinic double-billed, overcharged, or refused to fix a billing error
+- the clinic misrepresented what insurance would cover
+- the clinic billed for work not performed or clearly mishandled the claim
 
-NOT the clinic's fault (answer NO):
-- Patient's plan simply doesn't cover the procedure
-- Patient didn't understand their own coverage limits
-- Insurance company took a long time to pay (no evidence clinic acted badly)
-- Patient upset about cost but no specific billing error alleged
+SHARED:
+- the review is insurance-related but responsibility is mixed or ambiguous
+- there may be both insurer friction and clinic communication or process failures
 
-UNCERTAIN when:
-- There's clearly a billing dispute but it's genuinely ambiguous who caused it
-- Review is vague and could go either way"""
+NO:
+- the review is not materially about insurance, claims, coverage, reimbursement, or billing responsibility
+- it is only a general service complaint
+
+Be conservative. Do not blame the clinic unless the review gives concrete evidence."""
 
 _REVIEW_PROMPT = """Review to classify:
 \"\"\"{review_text}\"\"\"
 
-Respond on a single line in EXACTLY this format (no other text):
-VERDICT: CONFIRMED | UNCERTAIN | NO
+Respond in EXACTLY this format:
+VERDICT: INSURER | CLINIC | SHARED | NO
 CONFIDENCE: 0.0-1.0
+SEVERITY: 1-5
+EXPLICIT_INSURANCE_MENTION: YES | NO
 REASON: <one concise sentence>"""
 
-# ── Clinic-level prompt ───────────────────────────────────────────────────────
+CLASSIFICATION_PROMPT = f"{_REVIEW_SYSTEM}\n\n{_REVIEW_PROMPT}"
 
-_CLINIC_SYSTEM = """You are an insurance billing fraud investigator assessing whether a dental clinic has a SYSTEMIC billing problem affecting multiple patients.
+_BATCH_REVIEW_PROMPT = """Classify each review independently.
 
-A systemic problem means the clinic routinely (not accidentally) engages in billing misconduct: wrong codes, failure to submit, fraudulent charges, or deliberate overcharging. This is different from one or two isolated administrative errors any busy practice might make.
+Use the same order as the input list.
 
-Be conservative. Only flag clinics where the evidence strongly suggests an ongoing pattern, not a few unlucky patients."""
+Reviews:
+{review_block}
+
+Return EXACTLY this format for each item:
+ITEM 1
+VERDICT: INSURER | CLINIC | SHARED | NO
+CONFIDENCE: 0.0-1.0
+SEVERITY: 1-5
+EXPLICIT_INSURANCE_MENTION: YES | NO
+REASON: <one concise sentence>
+
+ITEM 2
+VERDICT: INSURER | CLINIC | SHARED | NO
+CONFIDENCE: 0.0-1.0
+SEVERITY: 1-5
+EXPLICIT_INSURANCE_MENTION: YES | NO
+REASON: <one concise sentence>
+
+..."""
+
+_CLINIC_SYSTEM = """You are assessing whether a dental clinic is being unfairly harmed in public reviews by insurer-driven insurance friction.
+
+You are not looking for fraud by default. You are looking for clinics where patients repeatedly blame the clinic for issues that seem primarily caused by the insurer, plan design, reimbursement delays, or coverage confusion.
+
+Be conservative. Only flag clinics where the evidence shows a meaningful recurring pattern, not one or two isolated complaints."""
 
 _CLINIC_PROMPT = """Clinic: {clinic_name}
 Google rating: {rating} / 5.0
 Total reviews on Google: {total_reviews}
-Reviews with confirmed insurance complaints: {confirmed_count} ({complaint_rate:.1f}% of all reviews)
-Reviews with uncertain insurance complaints: {uncertain_count}
+Reviews primarily caused by insurer friction: {insurer_count} ({complaint_rate:.1f}% of all reviews)
+Reviews primarily caused by clinic fault: {clinic_count}
+Mixed or unclear insurance complaints: {shared_count}
 
-CONFIRMED complaint reviews (clinic clearly at fault):
-{confirmed_text}
+INSURER-FAULT reviews:
+{insurer_text}
 
-UNCERTAIN complaint reviews (may or may not be clinic's fault):
-{uncertain_text}
+CLINIC-FAULT reviews:
+{clinic_text}
 
-Determine whether this clinic has a SYSTEMIC insurance billing problem.
+SHARED/UNCLEAR reviews:
+{shared_text}
 
-Ask yourself:
-1. Do multiple independent reviewers describe the SAME specific misconduct?
-2. Are the complaints specific and credible (mention amounts, claim numbers, specific errors)?
-3. Given the total review count, is this complaint rate meaningful or statistical noise?
-4. Does the pattern suggest intentional misconduct vs occasional administrative mistakes?
+Determine whether this clinic should be targeted for outreach because it appears to be unfairly harmed by insurer-driven review complaints.
 
-Respond in EXACTLY this format (no other text):
+Respond in EXACTLY this format:
 VERDICT: YES | NO
 CONFIDENCE: 0.0-1.0
 SEVERITY: LOW | MEDIUM | HIGH
-PATTERN: <one sentence — what the pattern is if YES, or why not systemic if NO>"""
+PATTERN: <one sentence — what the insurer-driven pattern is if YES, or why not a target if NO>"""
 
-
-# ── Data classes ──────────────────────────────────────────────────────────────
 
 class ReviewVerdict(str, Enum):
-    CONFIRMED = "CONFIRMED"
-    UNCERTAIN = "UNCERTAIN"
+    INSURER = "INSURER"
+    CONFIRMED = "INSURER"
+    CLINIC = "CLINIC"
+    SHARED = "SHARED"
+    UNCERTAIN = "SHARED"
     NO = "NO"
 
 
@@ -110,110 +132,186 @@ class ReviewClassification:
     verdict: ReviewVerdict
     confidence: float
     reasoning: str
+    severity: int = 1
+    explicit_insurance_mention: bool = False
+
+
+LLMVerdict = ReviewClassification
 
 
 @dataclass
 class ClinicVerdict:
-    is_systemic: bool
-    confidence: float       # 0.0–1.0
-    severity: str           # LOW | MEDIUM | HIGH
-    pattern: str            # human-readable summary
+    is_target: bool
+    confidence: float
+    severity: str
+    pattern: str
 
 
-# ── Stage 1: per-review ───────────────────────────────────────────────────────
+def _generate_content_with_retry(*, contents: str, system_instruction: str, max_attempts: int = 4):
+    delay_seconds = 1.0
+    last_error: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return _client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(system_instruction=system_instruction),
+            )
+        except Exception as exc:
+            last_error = exc
+            error_text = str(exc).lower()
+            retryable = any(token in error_text for token in ("429", "toomanyrequests", "resource_exhausted", "quota"))
+            if not retryable or attempt == max_attempts:
+                raise
+            time.sleep(delay_seconds)
+            delay_seconds = min(delay_seconds * 2, 8.0)
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("Gemini request failed")
+
 
 def classify_review(review_text: str) -> ReviewClassification:
-    response = _client.models.generate_content(
-        model="gemini-2.5-flash",
+    response = _generate_content_with_retry(
         contents=_REVIEW_PROMPT.format(review_text=review_text),
-        config=types.GenerateContentConfig(system_instruction=_REVIEW_SYSTEM),
+        system_instruction=_REVIEW_SYSTEM,
     )
     return _parse_review_response(response.text.strip())
 
 
 def classify_reviews(review_texts: list[str]) -> list[ReviewClassification]:
-    return [classify_review(t) for t in review_texts]
+    if not review_texts:
+        return []
+
+    verdicts: list[ReviewClassification] = []
+    for start in range(0, len(review_texts), _REVIEW_BATCH_SIZE):
+        batch = review_texts[start:start + _REVIEW_BATCH_SIZE]
+        if len(batch) == 1:
+            verdicts.append(classify_review(batch[0]))
+            continue
+
+        review_block = "\n\n".join(f"[{idx + 1}] {text}" for idx, text in enumerate(batch))
+        response = _generate_content_with_retry(
+            contents=_BATCH_REVIEW_PROMPT.format(review_block=review_block),
+            system_instruction=_REVIEW_SYSTEM,
+        )
+        verdicts.extend(_parse_batch_review_response(response.text.strip(), len(batch)))
+
+    return verdicts
 
 
 def _parse_review_response(raw: str) -> ReviewClassification:
-    import re
     verdict = ReviewVerdict.NO
     confidence = 0.0
     reasoning = raw
+    severity = 1
+    explicit_insurance_mention = False
 
-    v_match = re.search(r"VERDICT:\s*(CONFIRMED|UNCERTAIN|NO)", raw, re.IGNORECASE)
-    c_match = re.search(r"CONFIDENCE:\s*([\d.]+)", raw)
-    r_match = re.search(r"REASON:\s*(.+)", raw)
+    verdict_match = re.search(r"VERDICT:\s*(INSURER|CLINIC|SHARED|NO)", raw, re.IGNORECASE)
+    confidence_match = re.search(r"CONFIDENCE:\s*([\d.]+)", raw)
+    severity_match = re.search(r"SEVERITY:\s*([1-5])", raw, re.IGNORECASE)
+    explicit_match = re.search(r"EXPLICIT_INSURANCE_MENTION:\s*(YES|NO)", raw, re.IGNORECASE)
+    reason_match = re.search(r"REASON:\s*(.+)", raw)
 
-    if v_match:
-        verdict = ReviewVerdict(v_match.group(1).upper())
-    if c_match:
-        confidence = min(1.0, max(0.0, float(c_match.group(1))))
-    if r_match:
-        reasoning = r_match.group(1).strip()
+    if verdict_match:
+        verdict = ReviewVerdict(verdict_match.group(1).upper())
+    if confidence_match:
+        confidence = min(1.0, max(0.0, float(confidence_match.group(1))))
+    if severity_match:
+        severity = int(severity_match.group(1))
+    if explicit_match:
+        explicit_insurance_mention = explicit_match.group(1).upper() == "YES"
+    if reason_match:
+        reasoning = reason_match.group(1).strip()
 
-    return ReviewClassification(verdict=verdict, confidence=confidence, reasoning=reasoning)
+    return ReviewClassification(
+        verdict=verdict,
+        confidence=confidence,
+        reasoning=reasoning,
+        severity=severity,
+        explicit_insurance_mention=explicit_insurance_mention,
+    )
 
 
-# ── Stage 2: clinic-level ─────────────────────────────────────────────────────
+def _parse_batch_review_response(raw: str, expected_count: int) -> list[ReviewClassification]:
+    blocks = re.split(r"(?=ITEM\s+\d+)", raw, flags=re.IGNORECASE)
+    parsed: dict[int, ReviewClassification] = {}
+    for block in blocks:
+        match = re.search(r"ITEM\s+(\d+)", block, re.IGNORECASE)
+        if not match:
+            continue
+        index = int(match.group(1))
+        parsed[index] = _parse_review_response(block)
+
+    if not parsed:
+        fallback = _parse_review_response(raw)
+        return [fallback for _ in range(expected_count)]
+
+    return [
+        parsed.get(index, ReviewClassification(verdict=ReviewVerdict.NO, confidence=0.0, reasoning=raw))
+        for index in range(1, expected_count + 1)
+    ]
+
 
 def analyze_clinic(
     clinic_name: str,
     overall_rating: float | None,
     total_reviews: int | None,
-    confirmed_reviews: list[str],
-    uncertain_reviews: list[str],
+    insurer_reviews: list[str],
+    clinic_reviews: list[str],
+    shared_reviews: list[str],
 ) -> ClinicVerdict:
-    total = total_reviews or max(len(confirmed_reviews) + len(uncertain_reviews), 1)
-    complaint_rate = (len(confirmed_reviews) / total) * 100
+    total = total_reviews or max(len(insurer_reviews) + len(clinic_reviews) + len(shared_reviews), 1)
+    complaint_rate = (len(insurer_reviews) / total) * 100
 
     def _fmt(reviews: list[str]) -> str:
         if not reviews:
             return "  (none)"
-        return "\n".join(f'  [{i+1}] "{t[:300]}"' for i, t in enumerate(reviews[:8]))
+        return "\n".join(f'  [{i + 1}] "{text[:300]}"' for i, text in enumerate(reviews[:8]))
 
     prompt = _CLINIC_PROMPT.format(
         clinic_name=clinic_name,
         rating=overall_rating or "unknown",
         total_reviews=total_reviews or "unknown",
-        confirmed_count=len(confirmed_reviews),
+        insurer_count=len(insurer_reviews),
         complaint_rate=complaint_rate,
-        uncertain_count=len(uncertain_reviews),
-        confirmed_text=_fmt(confirmed_reviews),
-        uncertain_text=_fmt(uncertain_reviews),
+        clinic_count=len(clinic_reviews),
+        shared_count=len(shared_reviews),
+        insurer_text=_fmt(insurer_reviews),
+        clinic_text=_fmt(clinic_reviews),
+        shared_text=_fmt(shared_reviews),
     )
 
-    response = _client.models.generate_content(
-        model="gemini-2.5-flash",
+    response = _generate_content_with_retry(
         contents=prompt,
-        config=types.GenerateContentConfig(system_instruction=_CLINIC_SYSTEM),
+        system_instruction=_CLINIC_SYSTEM,
     )
     return _parse_clinic_response(response.text.strip())
 
 
 def _parse_clinic_response(raw: str) -> ClinicVerdict:
-    import re
-    is_systemic = False
+    is_target = False
     confidence = 0.0
     severity = "LOW"
     pattern = raw
 
-    v_match = re.search(r"VERDICT:\s*(YES|NO)", raw, re.IGNORECASE)
-    c_match = re.search(r"CONFIDENCE:\s*([\d.]+)", raw)
-    s_match = re.search(r"SEVERITY:\s*(LOW|MEDIUM|HIGH)", raw, re.IGNORECASE)
-    p_match = re.search(r"PATTERN:\s*(.+)", raw)
+    verdict_match = re.search(r"VERDICT:\s*(YES|NO)", raw, re.IGNORECASE)
+    confidence_match = re.search(r"CONFIDENCE:\s*([\d.]+)", raw)
+    severity_match = re.search(r"SEVERITY:\s*(LOW|MEDIUM|HIGH)", raw, re.IGNORECASE)
+    pattern_match = re.search(r"PATTERN:\s*(.+)", raw)
 
-    if v_match:
-        is_systemic = v_match.group(1).upper() == "YES"
-    if c_match:
-        confidence = min(1.0, max(0.0, float(c_match.group(1))))
-    if s_match:
-        severity = s_match.group(1).upper()
-    if p_match:
-        pattern = p_match.group(1).strip()
+    if verdict_match:
+        is_target = verdict_match.group(1).upper() == "YES"
+    if confidence_match:
+        confidence = min(1.0, max(0.0, float(confidence_match.group(1))))
+    if severity_match:
+        severity = severity_match.group(1).upper()
+    if pattern_match:
+        pattern = pattern_match.group(1).strip()
 
     return ClinicVerdict(
-        is_systemic=is_systemic,
+        is_target=is_target,
         confidence=confidence,
         severity=severity,
         pattern=pattern,

@@ -1,3 +1,4 @@
+import asyncio
 import random
 import time
 
@@ -23,6 +24,10 @@ def get_random_delay(min_seconds: float = 2.0, max_seconds: float = 5.0) -> floa
 
 def sleep_random(min_seconds: float = 2.0, max_seconds: float = 5.0) -> None:
     time.sleep(get_random_delay(min_seconds, max_seconds))
+
+
+async def async_sleep_random(min_seconds: float = 2.0, max_seconds: float = 5.0) -> None:
+    await asyncio.sleep(get_random_delay(min_seconds, max_seconds))
 
 
 def get_browser_launch_args(proxy_url: str | None = None) -> list[str]:
